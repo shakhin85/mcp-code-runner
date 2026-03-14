@@ -26,8 +26,43 @@ def json_type_to_py(schema: dict) -> str:
     return _JSON_TYPE_MAP.get(t, "Any")
 
 
+def _describe_object_fields(schema: dict) -> str:
+    """Render object properties as {key: type, ...} one level deep."""
+    props = schema.get("properties", {})
+    if not props:
+        return "dict"
+    fields = []
+    for k, v in props.items():
+        fields.append(f"{k}: {json_type_to_py(v)}")
+    return "{" + ", ".join(fields) + "}"
+
+
+def _param_line(name: str, schema: dict, is_required: bool) -> tuple[str, str]:
+    """Return (signature_part, doc_line) for a parameter."""
+    py_type = json_type_to_py(schema)
+    desc = schema.get("description", "")
+
+    # Enum values
+    enum = schema.get("enum")
+    if enum:
+        enum_str = ", ".join(f'"{v}"' if isinstance(v, str) else str(v) for v in enum)
+        desc = f"{desc}. Values: {enum_str}" if desc else f"Values: {enum_str}"
+
+    # Nested object detail
+    if schema.get("type") == "object" and schema.get("properties"):
+        obj_detail = _describe_object_fields(schema)
+        desc = f"{desc}. Structure: {obj_detail}" if desc else f"Structure: {obj_detail}"
+
+    optional_tag = "" if is_required else ", optional"
+    doc = f"#   {name} ({py_type}{optional_tag}): {desc}" if desc else f"#   {name} ({py_type}{optional_tag})"
+
+    sig = f"{name}: {py_type}" if is_required else f"{name}: {py_type} = None"
+
+    return sig, doc
+
+
 def tool_to_stub(server_py_name: str, tool: Tool) -> str:
-    """Generate a Python async function stub string."""
+    """Generate a Python async function stub string with docs."""
     props: dict = {}
     required: list[str] = []
 
@@ -35,23 +70,25 @@ def tool_to_stub(server_py_name: str, tool: Tool) -> str:
         props = tool.inputSchema.get("properties", {})
         required = tool.inputSchema.get("required", [])
 
-    params = []
+    sig_parts = []
+    doc_lines = []
+
     for param_name, param_schema in props.items():
-        py_type = json_type_to_py(param_schema)
-        if param_name not in required:
-            params.append(f"{param_name}: {py_type} = None")
-        else:
-            params.append(f"{param_name}: {py_type}")
+        sig, doc = _param_line(param_name, param_schema, param_name in required)
+        sig_parts.append(sig)
+        doc_lines.append(doc)
 
-    params_str = ", ".join(params)
-    desc = (tool.description or "").replace("\n", " ").strip()
-    if len(desc) > 120:
-        desc = desc[:117] + "..."
+    params_str = ", ".join(sig_parts)
+    desc = (tool.description or "").strip()
+    if len(desc) > 200:
+        desc = desc[:197] + "..."
 
-    lines = [
-        f"# {desc}",
-        f"result = await {server_py_name}.{tool.name}({params_str})",
-    ]
+    lines = [f"# {desc}"]
+    if doc_lines:
+        lines.append("# Args:")
+        lines.extend(doc_lines)
+    lines.append(f"result = await {server_py_name}.{tool.name}({params_str})")
+
     return "\n".join(lines)
 
 
@@ -74,3 +111,23 @@ def generate_full_reference(tools_by_server: dict[str, list[Tool]], py_name_map:
         tools = tools_by_server.get(server_name, [])
         sections.append(generate_stubs_for_server(py_name, tools))
     return "\n\n".join(sections)
+
+
+def generate_server_overview(tools_by_server: dict[str, list[Tool]], py_name_map: dict[str, str]) -> str:
+    """Generate brief overview of connected servers (names + tool counts)."""
+    lines = ["# Connected MCP servers:"]
+    for py_name, server_name in sorted(py_name_map.items()):
+        tools = tools_by_server.get(server_name, [])
+        count = len(tools)
+        desc = ""
+        if tools and tools[0].description:
+            desc = tools[0].description.split("\n")[0].strip()
+            if len(desc) > 80:
+                desc = desc[:77] + "..."
+        line = f"# - {py_name} ({count} tools)"
+        if desc:
+            line += f": {desc}"
+        lines.append(line)
+    lines.append('#')
+    lines.append('# Use search_tools(query="...") to find specific tools with full signatures.')
+    return "\n".join(lines)
