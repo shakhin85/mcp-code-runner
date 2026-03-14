@@ -23,3 +23,8 @@ packages = ["src/code_runner"]
 dev = [
     "pytest>=9.0.2",
 ]
+
+[tool.pytest.ini_options]
+tmp_path_retention_policy = "none"
+tmp_path_retention_count = 3
+addopts = "--basetemp=.pytest_tmp"

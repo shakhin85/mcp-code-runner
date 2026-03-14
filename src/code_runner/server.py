@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
 # Servers to skip when connecting (avoid self-reference and heavy servers that rarely needed)
-SKIP_SERVERS: set[str] = {"code-runner", "serena", "figma"}
+SKIP_SERVERS: set[str] = {"code-runner", "serena"}
 
 
 @asynccontextmanager

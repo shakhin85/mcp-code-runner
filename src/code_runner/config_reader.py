@@ -3,10 +3,12 @@ Reads Claude's ~/.claude.json and extracts MCP server configurations.
 """
 
 import json
-import os
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -44,7 +46,14 @@ def load_server_configs(skip_servers: set[str] | None = None) -> dict[str, Serve
         if name in skip:
             continue
 
+        if cfg.get("disabled", False):
+            continue
+
         transport = cfg.get("type", "stdio")
+
+        if transport == "http" and not cfg.get("env"):
+            logger.info(f"Skipping HTTP server '{name}' (no auth headers)")
+            continue
 
         if transport == "http":
             servers[name] = ServerConfig(
