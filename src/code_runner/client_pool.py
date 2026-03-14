@@ -3,6 +3,7 @@ Manages long-lived connections to all configured MCP servers.
 Acts as MCP client to each server.
 """
 
+import asyncio
 import logging
 import os
 from contextlib import AsyncExitStack
@@ -15,6 +16,8 @@ from .config_reader import ServerConfig, load_server_configs, server_name_to_py
 
 logger = logging.getLogger(__name__)
 
+CONNECTION_TIMEOUT = 30  # seconds per server
+
 
 class MCPClientPool:
     def __init__(self):
@@ -24,18 +27,27 @@ class MCPClientPool:
         self.failed: dict[str, str] = {}
 
     async def startup(self, skip_servers: set[str] | None = None) -> None:
-        """Connect to all configured MCP servers."""
+        """Connect to all configured MCP servers in parallel."""
         await self._exit_stack.__aenter__()
         configs = load_server_configs(skip_servers)
 
-        for name, cfg in configs.items():
-            try:
-                await self._connect(name, cfg)
-                tool_count = len(self.tools.get(name, []))
-                logger.info(f"Connected to '{name}' ({tool_count} tools)")
-            except BaseException as e:
-                self.failed[name] = str(e)
-                logger.warning(f"Failed to connect to '{name}': {e}")
+        tasks = [
+            self._safe_connect(name, cfg)
+            for name, cfg in configs.items()
+        ]
+        await asyncio.gather(*tasks)
+
+    async def _safe_connect(self, name: str, cfg: ServerConfig) -> None:
+        try:
+            await asyncio.wait_for(
+                self._connect(name, cfg),
+                timeout=CONNECTION_TIMEOUT,
+            )
+            tool_count = len(self.tools.get(name, []))
+            logger.info(f"Connected to '{name}' ({tool_count} tools)")
+        except Exception as e:
+            self.failed[name] = str(e)
+            logger.warning(f"Failed to connect to '{name}': {e}")
 
     async def _connect(self, name: str, cfg: ServerConfig) -> None:
         if cfg.transport == "http":
@@ -45,53 +57,58 @@ class MCPClientPool:
 
     async def _connect_stdio(self, name: str, cfg: ServerConfig) -> None:
         merged_env = {**os.environ, **cfg.env}
-
         params = StdioServerParameters(
             command=cfg.command,
             args=cfg.args,
             env=merged_env,
         )
 
-        read, write = await self._exit_stack.enter_async_context(stdio_client(params))
-        session = await self._exit_stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-
-        result = await session.list_tools()
-        self.sessions[name] = session
-        self.tools[name] = result.tools
-
-    async def _connect_http(self, name: str, cfg: ServerConfig) -> None:
-        """Connect to HTTP/SSE MCP server using an isolated exit stack."""
-        temp_stack = AsyncExitStack()
-        await temp_stack.__aenter__()
+        stack = AsyncExitStack()
+        await stack.__aenter__()
 
         try:
-            try:
-                from mcp.client.streamable_http import streamablehttp_client
-
-                read, write, _ = await temp_stack.enter_async_context(
-                    streamablehttp_client(cfg.url, headers=cfg.env or {})
-                )
-            except ImportError:
-                from mcp.client.sse import sse_client
-
-                read, write = await temp_stack.enter_async_context(
-                    sse_client(cfg.url)
-                )
-
-            session = await temp_stack.enter_async_context(ClientSession(read, write))
+            read, write = await stack.enter_async_context(stdio_client(params))
+            session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
 
             result = await session.list_tools()
             self.sessions[name] = session
             self.tools[name] = result.tools
 
-            # Success — transfer ownership to main exit stack
-            self._exit_stack.push_async_callback(temp_stack.aclose)
-
+            self._exit_stack.push_async_callback(stack.aclose)
         except BaseException:
-            # Clean up the temp stack and re-raise
-            await temp_stack.aclose()
+            await stack.aclose()
+            raise
+
+    async def _connect_http(self, name: str, cfg: ServerConfig) -> None:
+        """Connect to HTTP/SSE MCP server using an isolated exit stack."""
+        stack = AsyncExitStack()
+        await stack.__aenter__()
+
+        try:
+            try:
+                from mcp.client.streamable_http import streamablehttp_client
+
+                read, write, _ = await stack.enter_async_context(
+                    streamablehttp_client(cfg.url, headers=cfg.env or {})
+                )
+            except ImportError:
+                from mcp.client.sse import sse_client
+
+                read, write = await stack.enter_async_context(
+                    sse_client(cfg.url)
+                )
+
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+
+            result = await session.list_tools()
+            self.sessions[name] = session
+            self.tools[name] = result.tools
+
+            self._exit_stack.push_async_callback(stack.aclose)
+        except BaseException:
+            await stack.aclose()
             raise
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict):
@@ -110,5 +127,5 @@ class MCPClientPool:
         return list(self.sessions.keys())
 
     def py_name_map(self) -> dict[str, str]:
-        """Map Python identifier → original server name."""
+        """Map Python identifier -> original server name."""
         return {server_name_to_py(name): name for name in self.sessions}
