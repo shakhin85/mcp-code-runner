@@ -1,17 +1,83 @@
 """
 Executes LLM-generated Python code with injected MCP tool wrappers.
+Includes AST validation, safe builtins, and auto-display of last expression.
 """
 
+import ast
 import asyncio
+import builtins
 import json
 import textwrap
 import traceback
+import types
 from typing import Any
 
 from mcp import ClientSession
 from mcp.types import Tool
 
 from .config_reader import server_name_to_py
+
+
+SAFE_BUILTINS = {
+    "print", "len", "range", "enumerate", "zip", "map", "filter",
+    "sorted", "reversed", "list", "dict", "set", "tuple", "str",
+    "int", "float", "bool", "isinstance",
+    "min", "max", "sum", "abs", "round", "any", "all",
+    "ValueError", "TypeError", "KeyError",
+    "IndexError", "RuntimeError", "Exception",
+}
+
+# Safe asyncio subset — no subprocess access
+_SAFE_ASYNCIO = types.ModuleType("asyncio")
+_SAFE_ASYNCIO.sleep = asyncio.sleep
+_SAFE_ASYNCIO.gather = asyncio.gather
+_SAFE_ASYNCIO.wait_for = asyncio.wait_for
+
+
+def validate_code(code: str) -> None:
+    """Validate user code AST. Raises ValueError if dangerous constructs found."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        raise ValueError(f"SyntaxError: {e}") from e
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                names = [node.module or ""]
+            raise ValueError(
+                f"import statements are not allowed: {', '.join(names)}"
+            )
+
+        if isinstance(node, ast.Attribute) and node.attr.startswith("__") and node.attr.endswith("__"):
+            raise ValueError(
+                f"dunder attribute access is not allowed: {node.attr}"
+            )
+
+
+def _transform_last_expr(code: str) -> str:
+    """If last statement is a bare expression, convert to return for auto-display.
+    Note: ast.unparse strips comments from user code. This is an accepted trade-off."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+
+    if not tree.body:
+        return code
+
+    last = tree.body[-1]
+    if isinstance(last, ast.Expr):
+        ret = ast.Return(value=last.value)
+        ast.copy_location(ret, last)
+        tree.body[-1] = ret
+        ast.fix_missing_locations(tree)
+        return ast.unparse(tree)
+
+    return code
 
 
 class _ToolNamespace:
@@ -62,9 +128,11 @@ class CodeExecutor:
         self.pool = pool
 
     def _build_namespace(self) -> dict[str, Any]:
+        # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
+        safe_builtins = {name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)}
         namespace: dict[str, Any] = {
-            "__builtins__": __builtins__,
-            "asyncio": asyncio,
+            "__builtins__": safe_builtins,
+            "asyncio": _SAFE_ASYNCIO,
             "json": json,
         }
 
@@ -76,6 +144,14 @@ class CodeExecutor:
         return namespace
 
     async def execute(self, code: str, timeout: float = 60.0) -> dict[str, Any]:
+        # Pipeline: 1. validate → 2. transform → 3. wrap → 4. exec
+        try:
+            validate_code(code)
+        except ValueError as e:
+            return {"success": False, "error": str(e), "output": ""}
+
+        code = _transform_last_expr(code)
+
         namespace = self._build_namespace()
 
         output_lines: list[str] = []
@@ -85,7 +161,6 @@ class CodeExecutor:
 
         namespace["print"] = captured_print
 
-        # Wrap user code in an async function to allow top-level await
         indented = textwrap.indent(code, "    ")
         wrapped = f"async def __user_code__():\n{indented}\n"
 
