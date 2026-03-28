@@ -89,7 +89,8 @@ class _ToolNamespace:
         self._tools = {t.name: t for t in tools}
 
         for tool in tools:
-            setattr(self, tool.name, self._make_wrapper(tool.name))
+            py_attr = tool.name.replace("-", "_")
+            setattr(self, py_attr, self._make_wrapper(tool.name))
 
     def _make_wrapper(self, tool_name: str):
         session = self._session

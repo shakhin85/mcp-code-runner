@@ -87,7 +87,8 @@ def tool_to_stub(server_py_name: str, tool: Tool) -> str:
     if doc_lines:
         lines.append("# Args:")
         lines.extend(doc_lines)
-    lines.append(f"result = await {server_py_name}.{tool.name}({params_str})")
+    py_tool_name = tool.name.replace("-", "_")
+    lines.append(f"result = await {server_py_name}.{py_tool_name}({params_str})")
 
     return "\n".join(lines)
 
