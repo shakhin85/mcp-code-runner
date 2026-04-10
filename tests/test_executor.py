@@ -1,4 +1,7 @@
 import asyncio
+import sys
+import time
+
 import pytest
 
 from code_runner.executor import validate_code, CodeExecutor, _ToolNamespace
@@ -146,6 +149,64 @@ class TestSandboxNamespace:
         result = asyncio.run(executor.execute("t = type(42)\nprint(t is int)"))
         assert result["success"] is True
         assert "True" in result["output"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGALRM is POSIX-only")
+class TestCpuHangProtection:
+    """Pure-CPU loops in user code must be interruptible.
+
+    asyncio.wait_for cannot cancel a coroutine that never yields — the event
+    loop itself is blocked. A SIGALRM-based hard timeout interrupts user
+    bytecode directly and frees the loop.
+    """
+
+    @pytest.fixture
+    def executor(self):
+        class FakePool:
+            sessions = {}
+            tools = {}
+        return CodeExecutor(FakePool())
+
+    def test_while_true_loop_times_out(self, executor):
+        start = time.monotonic()
+        result = asyncio.run(executor.execute(
+            "x = 0\nwhile True:\n    x = x + 1",
+            timeout=0.5,
+        ))
+        elapsed = time.monotonic() - start
+        assert result["success"] is False
+        assert "timed out" in result["error"].lower()
+        assert elapsed < 2.5, f"hang not interrupted, took {elapsed:.2f}s"
+
+    def test_except_exception_cannot_swallow_timeout(self, executor):
+        """User's `except Exception` must not catch the hard timeout."""
+        code = (
+            "x = 0\n"
+            "while True:\n"
+            "    try:\n"
+            "        x = x + 1\n"
+            "    except Exception:\n"
+            "        pass\n"
+        )
+        start = time.monotonic()
+        result = asyncio.run(executor.execute(code, timeout=0.5))
+        elapsed = time.monotonic() - start
+        assert result["success"] is False
+        assert elapsed < 2.5, f"timeout swallowed by except clause, took {elapsed:.2f}s"
+
+    def test_normal_code_unaffected(self, executor):
+        """Fast-completing code must not hit the alarm."""
+        result = asyncio.run(executor.execute("x = sum(range(1000))\nprint(x)", timeout=5.0))
+        assert result["success"] is True
+        assert "499500" in result["output"]
+
+    def test_async_sleep_still_uses_wait_for(self, executor):
+        """asyncio.sleep should be cancelled by wait_for (not signal)."""
+        start = time.monotonic()
+        result = asyncio.run(executor.execute("await asyncio.sleep(10)", timeout=0.3))
+        elapsed = time.monotonic() - start
+        assert result["success"] is False
+        assert elapsed < 1.5, f"wait_for path broken, took {elapsed:.2f}s"
 
 
 class TestResultParsing:

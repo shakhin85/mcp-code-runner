@@ -12,6 +12,8 @@ import decimal
 import json
 import math
 import re
+import signal
+import sys
 import textwrap
 import traceback
 import types
@@ -80,6 +82,58 @@ def _validate_repr_ast(tree: ast.AST) -> None:
                 root = root.value
             if not isinstance(root, ast.Name) or root.id not in _REPR_NAMESPACE:
                 raise ValueError("disallowed attribute root")
+
+
+class _SandboxTimeout(BaseException):
+    """Raised by SIGALRM handler when user code exceeds its hard timeout.
+
+    Inherits from BaseException (not Exception) so user code using
+    `except Exception:` cannot accidentally swallow the timeout and keep
+    spinning. KeyboardInterrupt and SystemExit use the same trick.
+    """
+
+
+_SIGNAL_AVAILABLE = sys.platform != "win32" and hasattr(signal, "SIGALRM")
+
+
+def _sandbox_alarm_handler(signum, frame):
+    raise _SandboxTimeout("CPU-bound execution exceeded hard timeout")
+
+
+# Module-level storage for the previous handler so we can restore it.
+_prev_alarm_handler: Any = None
+
+
+def _arm_sandbox_alarm(seconds: float) -> bool:
+    """Install SIGALRM backup timeout. Returns True if armed.
+
+    Fails silently and returns False on Windows (no SIGALRM) or when called
+    off the main thread (signal.signal raises ValueError).
+    """
+    global _prev_alarm_handler
+    if not _SIGNAL_AVAILABLE:
+        return False
+    try:
+        _prev_alarm_handler = signal.signal(signal.SIGALRM, _sandbox_alarm_handler)
+        signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.01))
+        return True
+    except (ValueError, OSError):
+        _prev_alarm_handler = None
+        return False
+
+
+def _disarm_sandbox_alarm() -> None:
+    global _prev_alarm_handler
+    if not _SIGNAL_AVAILABLE:
+        return
+    try:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        if _prev_alarm_handler is not None:
+            signal.signal(signal.SIGALRM, _prev_alarm_handler)
+    except (ValueError, OSError):
+        pass
+    finally:
+        _prev_alarm_handler = None
 
 
 def _parse_python_repr(text: str) -> Any:
@@ -201,6 +255,10 @@ class _ToolNamespace:
 class CodeExecutor:
     def __init__(self, pool):
         self.pool = pool
+        # Signals are process-global and can only be armed from the main
+        # thread — serialize executions so two concurrent calls can't clobber
+        # each other's SIGALRM state.
+        self._exec_lock = asyncio.Lock()
 
     def _build_namespace(self) -> dict[str, Any]:
         # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
@@ -220,6 +278,13 @@ class CodeExecutor:
         return namespace
 
     async def execute(self, code: str, timeout: float = 60.0) -> dict[str, Any]:
+        # Signals are process-global, so only one execution may arm SIGALRM
+        # at a time. The lock is also cheap for the common single-client
+        # MCP stdio case.
+        async with self._exec_lock:
+            return await self._execute_locked(code, timeout)
+
+    async def _execute_locked(self, code: str, timeout: float) -> dict[str, Any]:
         # Pipeline: 1. validate → 2. transform → 3. wrap → 4. exec
         try:
             validate_code(code)
@@ -232,7 +297,7 @@ class CodeExecutor:
 
         output_lines: list[str] = []
 
-        def captured_print(*args, sep=" ", end="\n", **kwargs):
+        def captured_print(*args, sep=" ", end="\n", **_kwargs):
             output_lines.append(sep.join(str(a) for a in args) + end)
 
         namespace["print"] = captured_print
@@ -255,6 +320,11 @@ class CodeExecutor:
                 "output": "",
             }
 
+        # Arm SIGALRM as a backup hard timeout so pure-CPU loops in user code
+        # (which never yield to the event loop, making asyncio.wait_for
+        # ineffective) can still be interrupted at the OS level.
+        alarm_armed = _arm_sandbox_alarm(timeout + 0.5)
+
         try:
             result = await asyncio.wait_for(
                 namespace["__user_code__"](),
@@ -268,6 +338,12 @@ class CodeExecutor:
                     output += str(result)
             return {"success": True, "output": output, "error": None}
 
+        except _SandboxTimeout:
+            return {
+                "success": False,
+                "error": f"Execution timed out after {timeout}s (CPU-bound loop detected by SIGALRM)",
+                "output": "".join(output_lines),
+            }
         except asyncio.TimeoutError:
             return {
                 "success": False,
@@ -280,3 +356,6 @@ class CodeExecutor:
                 "error": f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
                 "output": "".join(output_lines),
             }
+        finally:
+            if alarm_armed:
+                _disarm_sandbox_alarm()
