@@ -22,7 +22,13 @@ def test_skip_disabled_server(tmp_path, monkeypatch):
     assert "disabled-one" not in result
 
 
-def test_skip_http_without_auth(tmp_path, monkeypatch):
+def test_http_server_without_env_loads(tmp_path, monkeypatch):
+    """HTTP MCP servers without an env dict must still be loaded.
+
+    Cloud MCP servers (claude.ai Crypto.com, Figma, Zapier, etc.) authenticate
+    via OAuth through Claude's proxy, not via env vars. An earlier filter that
+    skipped HTTP servers lacking env was dropping all of them.
+    """
     config = _write_config(tmp_path, {
         "no-auth-http": {"type": "http", "url": "https://example.com/mcp"},
         "with-auth-http": {
@@ -35,9 +41,58 @@ def test_skip_http_without_auth(tmp_path, monkeypatch):
     monkeypatch.setattr("code_runner.config_reader.get_claude_config_path", lambda: config)
 
     result = load_server_configs()
-    assert "no-auth-http" not in result
+    assert "no-auth-http" in result
+    assert result["no-auth-http"].url == "https://example.com/mcp"
     assert "with-auth-http" in result
     assert "stdio-server" in result
+
+
+def test_mcp_json_project_config_loaded(tmp_path, monkeypatch):
+    """.mcp.json in the project dir must add its servers to the result."""
+    global_config = _write_config(tmp_path, {
+        "global-server": {"command": "echo", "args": ["global"]},
+    })
+    monkeypatch.setattr("code_runner.config_reader.get_claude_config_path", lambda: global_config)
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    mcp_json = project_dir / ".mcp.json"
+    mcp_json.write_text(json.dumps({
+        "mcpServers": {
+            "project-db": {"command": "echo", "args": ["db"]},
+        }
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "code_runner.config_reader._detect_project_dir", lambda: project_dir
+    )
+
+    result = load_server_configs()
+    assert "global-server" in result
+    assert "project-db" in result
+
+
+def test_global_server_wins_over_project(tmp_path, monkeypatch):
+    """If a name exists in both global and project, global takes priority."""
+    global_config = _write_config(tmp_path, {
+        "shared": {"command": "echo", "args": ["global"]},
+    })
+    monkeypatch.setattr("code_runner.config_reader.get_claude_config_path", lambda: global_config)
+
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / ".mcp.json").write_text(json.dumps({
+        "mcpServers": {
+            "shared": {"command": "echo", "args": ["project"]},
+        }
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(
+        "code_runner.config_reader._detect_project_dir", lambda: project_dir
+    )
+
+    result = load_server_configs()
+    assert result["shared"].args == ["global"]
 
 
 def test_skip_servers_parameter(tmp_path, monkeypatch):
