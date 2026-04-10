@@ -1,7 +1,34 @@
 import asyncio
 import pytest
 
-from code_runner.executor import validate_code, CodeExecutor
+from code_runner.executor import validate_code, CodeExecutor, _ToolNamespace
+
+
+class _FakeText:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeResult:
+    def __init__(self, text):
+        self.content = [_FakeText(text)]
+
+
+class _FakeSession:
+    """Test double: records the last call and returns a canned text payload."""
+    def __init__(self, payload_text):
+        self._payload = payload_text
+        self.last_call = None
+
+    async def call_tool(self, name, kwargs):
+        self.last_call = (name, kwargs)
+        return _FakeResult(self._payload)
+
+
+class _FakeTool:
+    def __init__(self, name, description=""):
+        self.name = name
+        self.description = description
 
 
 class TestValidateCode:
@@ -119,6 +146,87 @@ class TestSandboxNamespace:
         result = asyncio.run(executor.execute("t = type(42)\nprint(t is int)"))
         assert result["success"] is True
         assert "True" in result["output"]
+
+
+class TestResultParsing:
+    """Wrapper must parse both JSON and Python-repr responses from MCP servers.
+
+    Postgres MCP servers return str(list_of_dicts) which includes Decimal(...)
+    and single quotes — not valid JSON. The wrapper needs a safe fallback that
+    understands Decimal and datetime literals.
+    """
+
+    def _make_wrapper(self, payload):
+        session = _FakeSession(payload)
+        tool = _FakeTool("execute_sql")
+        ns = _ToolNamespace("postgres_test", session, [tool])
+        return ns.execute_sql
+
+    def test_json_list_parsed(self):
+        wrapper = self._make_wrapper('[{"a": 1}, {"a": 2}]')
+        result = asyncio.run(wrapper())
+        assert isinstance(result, list)
+        assert result[0]["a"] == 1
+
+    def test_json_dict_parsed(self):
+        wrapper = self._make_wrapper('{"count": 42}')
+        result = asyncio.run(wrapper())
+        assert isinstance(result, dict)
+        assert result["count"] == 42
+
+    def test_python_repr_with_decimal_parsed(self):
+        import decimal
+        payload = "[{'amount': Decimal('123.45'), 'name': 'foo'}]"
+        wrapper = self._make_wrapper(payload)
+        result = asyncio.run(wrapper())
+        assert isinstance(result, list), f"got {type(result).__name__}: {result!r}"
+        assert result[0]["amount"] == decimal.Decimal("123.45")
+        assert result[0]["name"] == "foo"
+
+    def test_python_repr_with_datetime_parsed(self):
+        import datetime
+        payload = "[{'created_at': datetime.datetime(2026, 4, 10, 12, 0, 0), 'id': 1}]"
+        wrapper = self._make_wrapper(payload)
+        result = asyncio.run(wrapper())
+        assert isinstance(result, list)
+        assert result[0]["created_at"] == datetime.datetime(2026, 4, 10, 12, 0, 0)
+        assert result[0]["id"] == 1
+
+    def test_python_repr_with_date_parsed(self):
+        import datetime
+        payload = "[{'day': datetime.date(2026, 4, 10)}]"
+        wrapper = self._make_wrapper(payload)
+        result = asyncio.run(wrapper())
+        assert result[0]["day"] == datetime.date(2026, 4, 10)
+
+    def test_python_repr_nested(self):
+        import decimal
+        payload = "[{'id': 1, 'items': [{'price': Decimal('9.99')}, {'price': Decimal('1.50')}]}]"
+        wrapper = self._make_wrapper(payload)
+        result = asyncio.run(wrapper())
+        assert result[0]["items"][0]["price"] == decimal.Decimal("9.99")
+        assert result[0]["items"][1]["price"] == decimal.Decimal("1.50")
+
+    def test_plain_string_passthrough(self):
+        wrapper = self._make_wrapper("just a plain error message")
+        result = asyncio.run(wrapper())
+        assert result == "just a plain error message"
+
+    def test_unparseable_returns_raw_string(self):
+        # Malformed but starts with [ — should not crash, should return raw
+        wrapper = self._make_wrapper("[this is not valid python or json")
+        result = asyncio.run(wrapper())
+        assert isinstance(result, str)
+
+    def test_iteration_yields_dicts_not_chars(self):
+        """Regression test for the lime_api bug: result[0] used to return first char."""
+        import decimal
+        payload = "[{'a': Decimal('1.00')}, {'a': Decimal('2.00')}]"
+        wrapper = self._make_wrapper(payload)
+        result = asyncio.run(wrapper())
+        first = result[0]
+        assert isinstance(first, dict), f"got {type(first).__name__}: {first!r}"
+        assert first["a"] == decimal.Decimal("1.00")
 
 
 class TestAutoDisplay:

@@ -15,6 +15,7 @@ import re
 import textwrap
 import traceback
 import types
+import uuid
 from typing import Any
 
 from mcp import ClientSession
@@ -47,6 +48,57 @@ SAFE_MODULES = {
     "math": math,
     "collections": collections,
 }
+
+# Namespace for parsing Python-repr responses from MCP servers (e.g. postgres
+# returns str(list_of_dicts) containing Decimal(...) and datetime literals).
+_REPR_NAMESPACE: dict[str, Any] = {
+    "Decimal": decimal.Decimal,
+    "datetime": datetime,
+    "UUID": uuid.UUID,
+    "True": True,
+    "False": False,
+    "None": None,
+}
+
+_REPR_ALLOWED_NODES: tuple = (
+    ast.Expression, ast.Constant, ast.List, ast.Tuple, ast.Dict, ast.Set,
+    ast.Name, ast.Load, ast.UnaryOp, ast.USub, ast.UAdd,
+    ast.Call, ast.Attribute, ast.keyword,
+)
+
+
+def _validate_repr_ast(tree: ast.AST) -> None:
+    for node in ast.walk(tree):
+        if not isinstance(node, _REPR_ALLOWED_NODES):
+            raise ValueError(f"disallowed node: {type(node).__name__}")
+        if isinstance(node, ast.Name):
+            if node.id not in _REPR_NAMESPACE:
+                raise ValueError(f"disallowed name: {node.id}")
+        if isinstance(node, ast.Attribute):
+            root: ast.AST = node
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if not isinstance(root, ast.Name) or root.id not in _REPR_NAMESPACE:
+                raise ValueError("disallowed attribute root")
+
+
+def _parse_python_repr(text: str) -> Any:
+    """Safely evaluate a Python repr string containing Decimal/datetime/UUID.
+
+    Validates the AST against a strict whitelist before evaluation so no
+    arbitrary code can run — only literal nodes and calls to known safe types.
+    Raises ValueError on any disallowed construct or SyntaxError.
+    """
+    try:
+        tree = ast.parse(text, mode="eval")
+    except SyntaxError as e:
+        raise ValueError(f"repr parse error: {e}") from e
+    _validate_repr_ast(tree)
+    return eval(
+        compile(tree, "<mcp-repr>", "eval"),
+        {"__builtins__": {}},
+        _REPR_NAMESPACE,
+    )
 
 
 def validate_code(code: str) -> None:
@@ -120,11 +172,18 @@ class _ToolNamespace:
                 elif hasattr(content, "data"):
                     texts.append(json.dumps(content.data, ensure_ascii=False))
             combined = "\n".join(texts)
-            # Try to parse as JSON for nicer access
-            if combined.strip().startswith(("{", "[")):
+            stripped = combined.strip()
+            # Try JSON first (fast path, most MCP servers), then fall back to
+            # the safe Python-repr parser for servers like postgres that return
+            # str(list_of_dicts) with Decimal(...) and single-quoted strings.
+            if stripped.startswith(("{", "[")):
                 try:
                     return json.loads(combined)
                 except json.JSONDecodeError:
+                    pass
+                try:
+                    return _parse_python_repr(stripped)
+                except ValueError:
                     pass
             return combined
 
