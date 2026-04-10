@@ -6,7 +6,12 @@ Includes AST validation, safe builtins, and auto-display of last expression.
 import ast
 import asyncio
 import builtins
+import collections
+import datetime
+import decimal
 import json
+import math
+import re
 import textwrap
 import traceback
 import types
@@ -21,7 +26,7 @@ from .config_reader import server_name_to_py
 SAFE_BUILTINS = {
     "print", "len", "range", "enumerate", "zip", "map", "filter",
     "sorted", "reversed", "list", "dict", "set", "tuple", "str",
-    "int", "float", "bool", "isinstance",
+    "int", "float", "bool", "isinstance", "type", "repr",
     "min", "max", "sum", "abs", "round", "any", "all",
     "ValueError", "TypeError", "KeyError",
     "IndexError", "RuntimeError", "Exception",
@@ -32,6 +37,16 @@ _SAFE_ASYNCIO = types.ModuleType("asyncio")
 _SAFE_ASYNCIO.sleep = asyncio.sleep
 _SAFE_ASYNCIO.gather = asyncio.gather
 _SAFE_ASYNCIO.wait_for = asyncio.wait_for
+
+# Pre-imported stdlib modules available in sandbox without `import` statements.
+# Each is filesystem/process-free and safe for arbitrary LLM-generated code.
+SAFE_MODULES = {
+    "re": re,
+    "datetime": datetime,
+    "decimal": decimal,
+    "math": math,
+    "collections": collections,
+}
 
 
 def validate_code(code: str) -> None:
@@ -135,6 +150,7 @@ class CodeExecutor:
             "__builtins__": safe_builtins,
             "asyncio": _SAFE_ASYNCIO,
             "json": json,
+            **SAFE_MODULES,
         }
 
         for server_name, session in self.pool.sessions.items():

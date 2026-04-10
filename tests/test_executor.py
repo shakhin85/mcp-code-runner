@@ -77,6 +77,49 @@ class TestSandboxNamespace:
         ))
         assert result["success"] is False
 
+    def test_re_available(self, executor):
+        result = asyncio.run(executor.execute(
+            "m = re.match(r'(\\d+)', '42 abc')\nprint(m.group(1))"
+        ))
+        assert result["success"] is True
+        assert "42" in result["output"]
+
+    def test_datetime_available(self, executor):
+        result = asyncio.run(executor.execute(
+            "d = datetime.date(2026, 4, 10)\nprint(d.isoformat())"
+        ))
+        assert result["success"] is True
+        assert "2026-04-10" in result["output"]
+
+    def test_decimal_available(self, executor):
+        result = asyncio.run(executor.execute(
+            "x = decimal.Decimal('1.1') + decimal.Decimal('2.2')\nprint(x)"
+        ))
+        assert result["success"] is True
+        assert "3.3" in result["output"]
+
+    def test_math_available(self, executor):
+        result = asyncio.run(executor.execute("print(math.sqrt(16))"))
+        assert result["success"] is True
+        assert "4.0" in result["output"]
+
+    def test_collections_counter_available(self, executor):
+        result = asyncio.run(executor.execute(
+            "c = collections.Counter(['a', 'b', 'a'])\nprint(c['a'])"
+        ))
+        assert result["success"] is True
+        assert "2" in result["output"]
+
+    def test_type_builtin_available(self, executor):
+        result = asyncio.run(executor.execute("print(type(42).__name__)"))
+        # __name__ dunder blocked — use without dunder
+        assert result["success"] is False
+
+    def test_type_builtin_simple(self, executor):
+        result = asyncio.run(executor.execute("t = type(42)\nprint(t is int)"))
+        assert result["success"] is True
+        assert "True" in result["output"]
+
 
 class TestAutoDisplay:
     @pytest.fixture
