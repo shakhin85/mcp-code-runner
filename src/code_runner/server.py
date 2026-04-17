@@ -122,7 +122,12 @@ async def search_tools(query: str, ctx: Context) -> str:
 
 
 @mcp.tool()
-async def execute_code(code: str, ctx: Context, timeout: float = 60.0) -> str:
+async def execute_code(
+    code: str,
+    ctx: Context,
+    timeout: float = 60.0,
+    max_output_bytes: int = 20000,
+) -> str:
     """
     Execute Python code with access to all connected MCP tools.
 
@@ -136,13 +141,21 @@ async def execute_code(code: str, ctx: Context, timeout: float = 60.0) -> str:
     Args:
         code: Python code to execute. Top-level await is supported.
         timeout: Maximum execution time in seconds (default 60).
+        max_output_bytes: Max size of returned output in bytes (default 20000,
+            ≈5K tokens). Output over this limit is truncated with a footer.
+            Pass 0 to disable. Raise when you explicitly need a larger sample;
+            prefer SQL LIMIT/TOP or pagination over bumping this.
     """
     from .executor import CodeExecutor
 
     pool: MCPClientPool = ctx.request_context.lifespan_context["pool"]
     executor = CodeExecutor(pool)
 
-    result = await executor.execute(code, timeout=timeout)
+    result = await executor.execute(
+        code,
+        timeout=timeout,
+        max_output_bytes=max_output_bytes,
+    )
 
     lines = []
     if result["output"]:

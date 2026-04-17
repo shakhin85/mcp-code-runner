@@ -69,6 +69,29 @@ _REPR_ALLOWED_NODES: tuple = (
 )
 
 
+DEFAULT_MAX_OUTPUT_BYTES = 20000
+
+
+def _truncate_output(output: str, max_bytes: int) -> str:
+    """Truncate output to max_bytes (UTF-8 safe) with an informative footer.
+
+    Protects the model's context from runaway MCP responses (SELECT * without
+    LIMIT, large file dumps, etc.). Pass max_bytes <= 0 to disable.
+    """
+    if max_bytes <= 0 or not output:
+        return output
+    encoded = output.encode("utf-8")
+    total_bytes = len(encoded)
+    if total_bytes <= max_bytes:
+        return output
+    kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    footer = (
+        f"\n\n... [TRUNCATED: output was {total_bytes} bytes, kept first "
+        f"{max_bytes}. Use SQL LIMIT/TOP, pagination, or narrow your query.]"
+    )
+    return kept + footer
+
+
 def _validate_repr_ast(tree: ast.AST) -> None:
     for node in ast.walk(tree):
         if not isinstance(node, _REPR_ALLOWED_NODES):
@@ -277,19 +300,36 @@ class CodeExecutor:
 
         return namespace
 
-    async def execute(self, code: str, timeout: float = 60.0) -> dict[str, Any]:
+    async def execute(
+        self,
+        code: str,
+        timeout: float = 60.0,
+        max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+    ) -> dict[str, Any]:
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
         # MCP stdio case.
         async with self._exec_lock:
-            return await self._execute_locked(code, timeout)
+            return await self._execute_locked(code, timeout, max_output_bytes)
 
-    async def _execute_locked(self, code: str, timeout: float) -> dict[str, Any]:
+    async def _execute_locked(
+        self,
+        code: str,
+        timeout: float,
+        max_output_bytes: int,
+    ) -> dict[str, Any]:
+        def finalize(success: bool, output: str, error: str | None) -> dict[str, Any]:
+            return {
+                "success": success,
+                "output": _truncate_output(output, max_output_bytes),
+                "error": error,
+            }
+
         # Pipeline: 1. validate → 2. transform → 3. wrap → 4. exec
         try:
             validate_code(code)
         except ValueError as e:
-            return {"success": False, "error": str(e), "output": ""}
+            return finalize(False, "", str(e))
 
         code = _transform_last_expr(code)
 
@@ -308,17 +348,9 @@ class CodeExecutor:
         try:
             exec(wrapped, namespace)
         except SyntaxError as e:
-            return {
-                "success": False,
-                "error": f"SyntaxError: {e}",
-                "output": "",
-            }
+            return finalize(False, "", f"SyntaxError: {e}")
         except Exception as e:
-            return {
-                "success": False,
-                "error": f"CompileError: {e}\n{traceback.format_exc()}",
-                "output": "",
-            }
+            return finalize(False, "", f"CompileError: {e}\n{traceback.format_exc()}")
 
         # Arm SIGALRM as a backup hard timeout so pure-CPU loops in user code
         # (which never yield to the event loop, making asyncio.wait_for
@@ -336,26 +368,26 @@ class CodeExecutor:
                     output += json.dumps(result, ensure_ascii=False, indent=2)
                 else:
                     output += str(result)
-            return {"success": True, "output": output, "error": None}
+            return finalize(True, output, None)
 
         except _SandboxTimeout:
-            return {
-                "success": False,
-                "error": f"Execution timed out after {timeout}s (CPU-bound loop detected by SIGALRM)",
-                "output": "".join(output_lines),
-            }
+            return finalize(
+                False,
+                "".join(output_lines),
+                f"Execution timed out after {timeout}s (CPU-bound loop detected by SIGALRM)",
+            )
         except asyncio.TimeoutError:
-            return {
-                "success": False,
-                "error": f"Execution timed out after {timeout}s",
-                "output": "".join(output_lines),
-            }
+            return finalize(
+                False,
+                "".join(output_lines),
+                f"Execution timed out after {timeout}s",
+            )
         except Exception as e:
-            return {
-                "success": False,
-                "error": f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
-                "output": "".join(output_lines),
-            }
+            return finalize(
+                False,
+                "".join(output_lines),
+                f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+            )
         finally:
             if alarm_armed:
                 _disarm_sandbox_alarm()

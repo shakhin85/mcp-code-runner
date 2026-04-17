@@ -322,3 +322,84 @@ class TestAutoDisplay:
         result = asyncio.run(executor.execute("{'a': 1, 'b': 2}"))
         assert result["success"] is True
         assert "a" in result["output"]
+
+
+class TestOutputTruncation:
+    """Output over max_output_bytes must be truncated with a footer.
+
+    Protects against runaway outputs (e.g. SELECT * without LIMIT) from
+    burning the model's context window.
+    """
+
+    @pytest.fixture
+    def executor(self):
+        class FakePool:
+            sessions = {}
+            tools = {}
+        return CodeExecutor(FakePool())
+
+    def test_small_output_not_truncated(self, executor):
+        result = asyncio.run(executor.execute("print('hello')", max_output_bytes=1000))
+        assert result["success"] is True
+        assert "hello" in result["output"]
+        assert "TRUNCATED" not in result["output"]
+
+    def test_large_print_truncated(self, executor):
+        result = asyncio.run(executor.execute(
+            "print('x' * 50000)", max_output_bytes=1000
+        ))
+        assert result["success"] is True
+        assert "TRUNCATED" in result["output"]
+        assert len(result["output"].encode("utf-8")) < 1500
+
+    def test_truncation_footer_mentions_totals(self, executor):
+        result = asyncio.run(executor.execute(
+            "print('x' * 50000)", max_output_bytes=1000
+        ))
+        assert "50001" in result["output"] or "50000" in result["output"]
+        assert "1000" in result["output"]
+
+    def test_default_limit_applied(self, executor):
+        result = asyncio.run(executor.execute("print('x' * 30000)"))
+        assert result["success"] is True
+        assert "TRUNCATED" in result["output"]
+
+    def test_under_default_limit_not_truncated(self, executor):
+        result = asyncio.run(executor.execute("print('x' * 5000)"))
+        assert result["success"] is True
+        assert "TRUNCATED" not in result["output"]
+
+    def test_zero_disables_truncation(self, executor):
+        result = asyncio.run(executor.execute(
+            "print('x' * 50000)", max_output_bytes=0
+        ))
+        assert result["success"] is True
+        assert "TRUNCATED" not in result["output"]
+        assert len(result["output"]) >= 50000
+
+    def test_utf8_boundary_safe(self, executor):
+        result = asyncio.run(executor.execute(
+            "print('я' * 2000)", max_output_bytes=1001
+        ))
+        assert result["success"] is True
+        result["output"].encode("utf-8")
+        assert "TRUNCATED" in result["output"]
+
+    def test_auto_displayed_value_truncated(self, executor):
+        result = asyncio.run(executor.execute(
+            "'x' * 50000", max_output_bytes=1000
+        ))
+        assert "TRUNCATED" in result["output"]
+
+    def test_dict_return_truncated(self, executor):
+        result = asyncio.run(executor.execute(
+            "{'data': 'x' * 50000}", max_output_bytes=1000
+        ))
+        assert "TRUNCATED" in result["output"]
+
+    def test_error_path_output_also_truncated(self, executor):
+        code = "print('x' * 50000)\nraise ValueError('boom')"
+        result = asyncio.run(executor.execute(code, max_output_bytes=1000))
+        assert result["success"] is False
+        assert "TRUNCATED" in result["output"]
+        assert len(result["output"].encode("utf-8")) < 1500
