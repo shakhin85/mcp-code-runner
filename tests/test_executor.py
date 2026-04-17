@@ -403,3 +403,96 @@ class TestOutputTruncation:
         assert result["success"] is False
         assert "TRUNCATED" in result["output"]
         assert len(result["output"].encode("utf-8")) < 1500
+
+
+class TestPersistentNamespace:
+    """Variables set under a session_id must persist across execute() calls.
+
+    Enables cheap follow-up operations on previously fetched data without
+    re-running expensive MCP queries.
+    """
+
+    @pytest.fixture
+    def executor(self):
+        class FakePool:
+            sessions = {}
+            tools = {}
+        return CodeExecutor(FakePool())
+
+    def test_no_session_id_is_ephemeral(self, executor):
+        asyncio.run(executor.execute("x = 42"))
+        result = asyncio.run(executor.execute("print(x)"))
+        assert result["success"] is False
+        assert "NameError" in result["error"] or "x" in result["error"]
+
+    def test_same_session_persists_variable(self, executor):
+        r1 = asyncio.run(executor.execute("x = 42", session_id="s1"))
+        assert r1["success"] is True
+        r2 = asyncio.run(executor.execute("print(x)", session_id="s1"))
+        assert r2["success"] is True
+        assert "42" in r2["output"]
+
+    def test_different_sessions_isolated(self, executor):
+        asyncio.run(executor.execute("x = 'alpha'", session_id="a"))
+        asyncio.run(executor.execute("x = 'beta'", session_id="b"))
+        r_a = asyncio.run(executor.execute("print(x)", session_id="a"))
+        r_b = asyncio.run(executor.execute("print(x)", session_id="b"))
+        assert "alpha" in r_a["output"]
+        assert "beta" in r_b["output"]
+
+    def test_session_persists_complex_data(self, executor):
+        asyncio.run(executor.execute(
+            "data = [{'id': 1, 'name': 'a'}, {'id': 2, 'name': 'b'}]",
+            session_id="s",
+        ))
+        result = asyncio.run(executor.execute(
+            "print(len(data))\nprint(data[0]['name'])",
+            session_id="s",
+        ))
+        assert result["success"] is True
+        assert "2" in result["output"]
+        assert "a" in result["output"]
+
+    def test_failed_exec_preserves_previous_vars(self, executor):
+        asyncio.run(executor.execute("x = 100", session_id="s"))
+        bad = asyncio.run(executor.execute("raise ValueError('oops')", session_id="s"))
+        assert bad["success"] is False
+        r = asyncio.run(executor.execute("print(x)", session_id="s"))
+        assert r["success"] is True
+        assert "100" in r["output"]
+
+    def test_framework_names_not_persisted(self, executor):
+        """json/re/datetime/asyncio and MCP server objects must not leak into user_vars."""
+        asyncio.run(executor.execute("x = 1", session_id="s"))
+        state = executor._sessions["s"]
+        assert "x" in state.user_vars
+        assert "json" not in state.user_vars
+        assert "re" not in state.user_vars
+        assert "datetime" not in state.user_vars
+        assert "asyncio" not in state.user_vars
+        assert "print" not in state.user_vars
+
+    def test_lru_eviction_over_max_sessions(self, executor):
+        from code_runner.executor import MAX_SESSIONS
+        for i in range(MAX_SESSIONS + 5):
+            asyncio.run(executor.execute(f"x = {i}", session_id=f"s{i}"))
+        assert len(executor._sessions) <= MAX_SESSIONS
+        # earliest sessions should be gone
+        assert "s0" not in executor._sessions
+        # most recent should be present
+        assert f"s{MAX_SESSIONS + 4}" in executor._sessions
+
+    def test_ttl_expiry_on_next_access(self, executor):
+        import time
+        from code_runner.executor import SESSION_TTL
+        asyncio.run(executor.execute("x = 1", session_id="old"))
+        # force expiry by rewinding last_access
+        executor._sessions["old"].last_access = time.monotonic() - SESSION_TTL - 1
+        asyncio.run(executor.execute("y = 2", session_id="new"))
+        assert "old" not in executor._sessions
+
+    def test_auto_display_works_in_session(self, executor):
+        asyncio.run(executor.execute("x = 7", session_id="s"))
+        r = asyncio.run(executor.execute("x * 2", session_id="s"))
+        assert r["success"] is True
+        assert "14" in r["output"]

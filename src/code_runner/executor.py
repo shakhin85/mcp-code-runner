@@ -14,6 +14,7 @@ import math
 import re
 import signal
 import sys
+import time
 import traceback
 import types
 import uuid
@@ -69,6 +70,17 @@ _REPR_ALLOWED_NODES: tuple = (
 
 
 DEFAULT_MAX_OUTPUT_BYTES = 20000
+
+SESSION_TTL = 600.0  # seconds; idle sessions older than this are evicted
+MAX_SESSIONS = 20    # LRU cap to bound memory
+
+
+class _SessionState:
+    __slots__ = ("user_vars", "last_access")
+
+    def __init__(self) -> None:
+        self.user_vars: dict[str, Any] = {}
+        self.last_access: float = time.monotonic()
 
 
 def _truncate_output(output: str, max_bytes: int) -> str:
@@ -293,8 +305,37 @@ class CodeExecutor:
         # thread — serialize executions so two concurrent calls can't clobber
         # each other's SIGALRM state.
         self._exec_lock = asyncio.Lock()
+        self._sessions: dict[str, _SessionState] = {}
 
-    def _build_namespace(self) -> dict[str, Any]:
+    def _evict_expired_sessions(self) -> None:
+        now = time.monotonic()
+        expired = [
+            sid for sid, s in self._sessions.items()
+            if now - s.last_access > SESSION_TTL
+        ]
+        for sid in expired:
+            del self._sessions[sid]
+
+    def _evict_lru_if_over_capacity(self) -> None:
+        while len(self._sessions) > MAX_SESSIONS:
+            lru_sid = min(
+                self._sessions.items(),
+                key=lambda item: item[1].last_access,
+            )[0]
+            del self._sessions[lru_sid]
+
+    def _get_or_create_session(self, session_id: str) -> _SessionState:
+        self._evict_expired_sessions()
+        if session_id not in self._sessions:
+            self._sessions[session_id] = _SessionState()
+            self._evict_lru_if_over_capacity()
+        state = self._sessions[session_id]
+        state.last_access = time.monotonic()
+        return state
+
+    def _build_namespace(
+        self, session_id: str | None = None
+    ) -> tuple[dict[str, Any], set[str]]:
         # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
         safe_builtins = {name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)}
         namespace: dict[str, Any] = {
@@ -309,25 +350,50 @@ class CodeExecutor:
             tools = self.pool.tools.get(server_name, [])
             namespace[py_name] = _ToolNamespace(server_name, session, tools)
 
-        return namespace
+        # Snapshot framework-provided names so we can later diff to
+        # extract only the user's own variables for persistence.
+        framework_names = set(namespace.keys())
+
+        # Inject persistent user vars AFTER framework so user can shadow.
+        if session_id is not None:
+            state = self._get_or_create_session(session_id)
+            namespace.update(state.user_vars)
+
+        return namespace, framework_names
+
+    def _extract_user_vars(
+        self,
+        namespace: dict[str, Any],
+        framework_names: set[str],
+    ) -> dict[str, Any]:
+        return {
+            k: v for k, v in namespace.items()
+            if k not in framework_names
+            and k != "print"
+            and not (k.startswith("__") and k.endswith("__"))
+        }
 
     async def execute(
         self,
         code: str,
         timeout: float = 60.0,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
         # MCP stdio case.
         async with self._exec_lock:
-            return await self._execute_locked(code, timeout, max_output_bytes)
+            return await self._execute_locked(
+                code, timeout, max_output_bytes, session_id
+            )
 
     async def _execute_locked(
         self,
         code: str,
         timeout: float,
         max_output_bytes: int,
+        session_id: str | None,
     ) -> dict[str, Any]:
         def finalize(success: bool, output: str, error: str | None) -> dict[str, Any]:
             return {
@@ -344,7 +410,7 @@ class CodeExecutor:
 
         code = _transform_last_expr(code)
 
-        namespace = self._build_namespace()
+        namespace, framework_names = self._build_namespace(session_id)
 
         output_lines: list[str] = []
 
@@ -391,6 +457,10 @@ class CodeExecutor:
                     output += json.dumps(result, ensure_ascii=False, indent=2)
                 else:
                     output += str(result)
+            if session_id is not None:
+                state = self._sessions[session_id]
+                state.user_vars = self._extract_user_vars(namespace, framework_names)
+                state.last_access = time.monotonic()
             return finalize(True, output, None)
 
         except _SandboxTimeout:

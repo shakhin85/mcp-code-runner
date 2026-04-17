@@ -15,6 +15,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import Tool
 
 from .client_pool import MCPClientPool
+from .executor import CodeExecutor
 from .schema_gen import generate_server_overview, generate_stubs_for_server
 from .config_reader import server_name_to_py
 
@@ -37,8 +38,12 @@ async def lifespan(server: FastMCP):
     if failed:
         logger.warning(f"Failed: {failed}")
 
+    # Long-lived executor so persistent session namespaces survive across
+    # execute_code calls within the same server process.
+    executor = CodeExecutor(pool)
+
     try:
-        yield {"pool": pool}
+        yield {"pool": pool, "executor": executor}
     finally:
         await pool.shutdown()
 
@@ -127,6 +132,7 @@ async def execute_code(
     ctx: Context,
     timeout: float = 60.0,
     max_output_bytes: int = 20000,
+    session_id: str | None = None,
 ) -> str:
     """
     Execute Python code with access to all connected MCP tools.
@@ -145,16 +151,19 @@ async def execute_code(
             ≈5K tokens). Output over this limit is truncated with a footer.
             Pass 0 to disable. Raise when you explicitly need a larger sample;
             prefer SQL LIMIT/TOP or pagination over bumping this.
+        session_id: Optional string id. When two calls share the same id,
+            user-defined variables (assignments) persist between them, so a
+            follow-up call can reuse fetched data without re-running the
+            MCP query. Idle sessions expire after ~10 minutes; ≤20 sessions
+            are kept at once (LRU eviction). Omit for one-shot execution.
     """
-    from .executor import CodeExecutor
-
-    pool: MCPClientPool = ctx.request_context.lifespan_context["pool"]
-    executor = CodeExecutor(pool)
+    executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
 
     result = await executor.execute(
         code,
         timeout=timeout,
         max_output_bytes=max_output_bytes,
+        session_id=session_id,
     )
 
     lines = []
