@@ -14,7 +14,6 @@ import math
 import re
 import signal
 import sys
-import textwrap
 import traceback
 import types
 import uuid
@@ -202,9 +201,18 @@ def validate_code(code: str) -> None:
             )
 
 
+_RESULT_SENTINEL = "__cr_result__"
+
+
 def _transform_last_expr(code: str) -> str:
-    """If last statement is a bare expression, convert to return for auto-display.
-    Note: ast.unparse strips comments from user code. This is an accepted trade-off."""
+    """If last statement is a bare expression, assign it to a sentinel for auto-display.
+
+    The code runs at top level (not inside a function), so we cannot use `return`.
+    Instead we rewrite `x + 1` into `__cr_result__ = x + 1`, then pick the sentinel
+    out of the namespace after execution.
+
+    Note: ast.unparse strips comments from user code. Accepted trade-off.
+    """
     try:
         tree = ast.parse(code)
     except SyntaxError:
@@ -215,9 +223,12 @@ def _transform_last_expr(code: str) -> str:
 
     last = tree.body[-1]
     if isinstance(last, ast.Expr):
-        ret = ast.Return(value=last.value)
-        ast.copy_location(ret, last)
-        tree.body[-1] = ret
+        assign = ast.Assign(
+            targets=[ast.Name(id=_RESULT_SENTINEL, ctx=ast.Store())],
+            value=last.value,
+        )
+        ast.copy_location(assign, last)
+        tree.body[-1] = assign
         ast.fix_missing_locations(tree)
         return ast.unparse(tree)
 
@@ -341,12 +352,20 @@ class CodeExecutor:
             output_lines.append(sep.join(str(a) for a in args) + end)
 
         namespace["print"] = captured_print
+        # Clear any leftover auto-display sentinel from a previous exec in the
+        # same session so its presence truly reflects the current run.
+        namespace.pop(_RESULT_SENTINEL, None)
 
-        indented = textwrap.indent(code, "    ")
-        wrapped = f"async def __user_code__():\n{indented}\n"
-
+        # Compile with top-level-await support so user code runs at module
+        # scope. Assignments like `x = 42` land directly in `namespace`,
+        # which is how persistent sessions see them across calls.
         try:
-            exec(wrapped, namespace)
+            compiled = compile(
+                code,
+                "<user>",
+                "exec",
+                flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
+            )
         except SyntaxError as e:
             return finalize(False, "", f"SyntaxError: {e}")
         except Exception as e:
@@ -358,11 +377,15 @@ class CodeExecutor:
         alarm_armed = _arm_sandbox_alarm(timeout + 0.5)
 
         try:
-            result = await asyncio.wait_for(
-                namespace["__user_code__"](),
-                timeout=timeout,
-            )
+            # eval() on a top-level-await code object returns a coroutine if
+            # the source contained `await`; otherwise the synchronous code
+            # runs during eval and None is returned.
+            maybe_coro = eval(compiled, namespace)
+            if asyncio.iscoroutine(maybe_coro):
+                await asyncio.wait_for(maybe_coro, timeout=timeout)
+
             output = "".join(output_lines)
+            result = namespace.pop(_RESULT_SENTINEL, None)
             if result is not None:
                 if isinstance(result, (dict, list)):
                     output += json.dumps(result, ensure_ascii=False, indent=2)
