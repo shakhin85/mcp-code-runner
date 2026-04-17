@@ -7,6 +7,7 @@ Exposes three tools to Claude:
   - execute_code          -> run Python code with MCP tool access
 """
 
+import json
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -16,6 +17,7 @@ from mcp.types import Tool
 
 from .client_pool import MCPClientPool
 from .executor import CodeExecutor
+from .metrics import recorder_from_env
 from .schema_gen import generate_server_overview, generate_stubs_for_server
 from .config_reader import server_name_to_py
 
@@ -38,9 +40,13 @@ async def lifespan(server: FastMCP):
     if failed:
         logger.warning(f"Failed: {failed}")
 
+    recorder = recorder_from_env()
+    if recorder is not None:
+        logger.info(f"Metrics enabled: {recorder.path}")
+
     # Long-lived executor so persistent session namespaces survive across
     # execute_code calls within the same server process.
-    executor = CodeExecutor(pool)
+    executor = CodeExecutor(pool, recorder=recorder)
 
     try:
         yield {"pool": pool, "executor": executor}
@@ -182,6 +188,44 @@ async def execute_code(
         lines.append(f"\n[ERROR] {result['error']}")
 
     return "\n".join(lines) if lines else "(no output)"
+
+
+@mcp.tool()
+async def get_metrics(
+    ctx: Context,
+    since: str | None = None,
+    server: str | None = None,
+    kind: str | None = None,
+    limit: int = 100,
+) -> str:
+    """
+    Return recent code-runner metrics events as a JSON list (most recent last).
+
+    Two event kinds are recorded:
+      - "tool_call": one per MCP tool invocation (server, tool, duration_ms,
+        bytes, success, limit_applied, error).
+      - "execute_code": one per execute_code call — a rollup with total
+        duration, output_bytes_raw/sent, truncated flag, tool_calls count,
+        auto_limit_hits count, session_id.
+
+    Args:
+        since: ISO-8601 timestamp (e.g. "2026-04-17T10:00:00Z"); only events
+            with ts >= since are returned. String comparison, no parsing.
+        server: Filter tool_call events to a specific server name (e.g. "mssql").
+        kind: "tool_call" or "execute_code". Omit for both.
+        limit: Max events (default 100). Oldest trimmed first.
+
+    Returns JSON string. Empty list if no events match or metrics are disabled.
+    """
+    executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
+    if executor.recorder is None:
+        return json.dumps(
+            {"error": "metrics disabled — set CODE_RUNNER_METRICS=1 and restart"}
+        )
+    events = executor.recorder.read(
+        since=since, server=server, kind=kind, limit=limit
+    )
+    return json.dumps(events, ensure_ascii=False, default=str, indent=2)
 
 
 def main():

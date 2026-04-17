@@ -24,6 +24,7 @@ from mcp import ClientSession
 from mcp.types import Tool
 
 from .config_reader import server_name_to_py
+from .metrics import MetricsRecorder
 from .sql_limit import inject_limit
 
 
@@ -274,57 +275,94 @@ class _ToolNamespace:
         session: ClientSession,
         tools: list[Tool],
         auto_limit: int = 0,
+        stats: dict[str, int] | None = None,
+        recorder: "MetricsRecorder | None" = None,
     ):
         self._server_name = server_name
         self._session = session
         self._tools = {t.name: t for t in tools}
         self._auto_limit = auto_limit
         self._sql_dialect = _dialect_for_server(server_name) if auto_limit > 0 else None
+        self._stats = stats
+        self._recorder = recorder
 
         for tool in tools:
             py_attr = tool.name.replace("-", "_")
             setattr(self, py_attr, self._make_wrapper(tool.name))
 
-    def _maybe_inject_limit(self, tool_name: str, kwargs: dict) -> None:
-        """Mutate kwargs to add default LIMIT/TOP for bare SELECT queries."""
+    def _maybe_inject_limit(self, tool_name: str, kwargs: dict) -> bool:
+        """Mutate kwargs to add default LIMIT/TOP. Returns True if changed."""
         if self._sql_dialect is None or tool_name not in _SQL_TOOL_NAMES:
-            return
+            return False
         for arg in _SQL_ARG_NAMES:
             original = kwargs.get(arg)
             if isinstance(original, str) and original:
-                kwargs[arg] = inject_limit(
+                rewritten = inject_limit(
                     original, self._auto_limit, self._sql_dialect
                 )
-                break
+                if rewritten != original:
+                    kwargs[arg] = rewritten
+                    return True
+                return False
+        return False
 
     def _make_wrapper(self, tool_name: str):
         session = self._session
         server = self._server_name
 
         async def wrapper(**kwargs):
-            self._maybe_inject_limit(tool_name, kwargs)
-            result = await session.call_tool(tool_name, kwargs)
-            texts = []
-            for content in result.content:
-                if hasattr(content, "text"):
-                    texts.append(content.text)
-                elif hasattr(content, "data"):
-                    texts.append(json.dumps(content.data, ensure_ascii=False))
-            combined = "\n".join(texts)
-            stripped = combined.strip()
-            # Try JSON first (fast path, most MCP servers), then fall back to
-            # the safe Python-repr parser for servers like postgres that return
-            # str(list_of_dicts) with Decimal(...) and single-quoted strings.
-            if stripped.startswith(("{", "[")):
-                try:
-                    return json.loads(combined)
-                except json.JSONDecodeError:
-                    pass
-                try:
-                    return _parse_python_repr(stripped)
-                except ValueError:
-                    pass
-            return combined
+            limit_applied = self._maybe_inject_limit(tool_name, kwargs)
+            if limit_applied and self._stats is not None:
+                self._stats["auto_limit_hits"] += 1
+            start = time.monotonic()
+            success = True
+            error: str | None = None
+            out_bytes = 0
+            try:
+                result = await session.call_tool(tool_name, kwargs)
+                texts = []
+                for content in result.content:
+                    if hasattr(content, "text"):
+                        texts.append(content.text)
+                    elif hasattr(content, "data"):
+                        texts.append(json.dumps(content.data, ensure_ascii=False))
+                combined = "\n".join(texts)
+                out_bytes = len(combined.encode("utf-8"))
+                stripped = combined.strip()
+                # Try JSON first (fast path, most MCP servers), then fall back to
+                # the safe Python-repr parser for servers like postgres that return
+                # str(list_of_dicts) with Decimal(...) and single-quoted strings.
+                if stripped.startswith(("{", "[")):
+                    try:
+                        return json.loads(combined)
+                    except json.JSONDecodeError:
+                        pass
+                    try:
+                        return _parse_python_repr(stripped)
+                    except ValueError:
+                        pass
+                return combined
+            except BaseException as e:
+                success = False
+                error = f"{type(e).__name__}: {e}"
+                raise
+            finally:
+                if self._stats is not None:
+                    self._stats["tool_calls"] += 1
+                if self._recorder is not None:
+                    try:
+                        self._recorder.record({
+                            "kind": "tool_call",
+                            "server": server,
+                            "tool": tool_name,
+                            "duration_ms": round((time.monotonic() - start) * 1000, 2),
+                            "success": success,
+                            "bytes": out_bytes,
+                            "limit_applied": limit_applied,
+                            "error": error,
+                        })
+                    except Exception:
+                        pass
 
         wrapper.__name__ = tool_name
         wrapper.__qualname__ = f"{server}.{tool_name}"
@@ -338,8 +376,9 @@ class _ToolNamespace:
 
 
 class CodeExecutor:
-    def __init__(self, pool):
+    def __init__(self, pool, recorder: "MetricsRecorder | None" = None):
         self.pool = pool
+        self.recorder = recorder
         # Signals are process-global and can only be armed from the main
         # thread — serialize executions so two concurrent calls can't clobber
         # each other's SIGALRM state.
@@ -376,6 +415,7 @@ class CodeExecutor:
         self,
         session_id: str | None = None,
         auto_limit: int = 0,
+        stats: dict[str, int] | None = None,
     ) -> tuple[dict[str, Any], set[str]]:
         # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
         safe_builtins = {name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)}
@@ -390,7 +430,10 @@ class CodeExecutor:
             py_name = server_name_to_py(server_name)
             tools = self.pool.tools.get(server_name, [])
             namespace[py_name] = _ToolNamespace(
-                server_name, session, tools, auto_limit=auto_limit
+                server_name, session, tools,
+                auto_limit=auto_limit,
+                stats=stats,
+                recorder=self.recorder,
             )
 
         # Snapshot framework-provided names so we can later diff to
@@ -440,12 +483,31 @@ class CodeExecutor:
         session_id: str | None,
         auto_limit: int,
     ) -> dict[str, Any]:
+        start_exec = time.monotonic()
+        stats: dict[str, int] = {"tool_calls": 0, "auto_limit_hits": 0}
+
         def finalize(success: bool, output: str, error: str | None) -> dict[str, Any]:
-            return {
-                "success": success,
-                "output": _truncate_output(output, max_output_bytes),
-                "error": error,
-            }
+            truncated = _truncate_output(output, max_output_bytes)
+            result = {"success": success, "output": truncated, "error": error}
+            if self.recorder is not None:
+                try:
+                    raw_bytes = len(output.encode("utf-8")) if output else 0
+                    sent_bytes = len(truncated.encode("utf-8")) if truncated else 0
+                    self.recorder.record({
+                        "kind": "execute_code",
+                        "duration_ms": round((time.monotonic() - start_exec) * 1000, 2),
+                        "success": success,
+                        "output_bytes_raw": raw_bytes,
+                        "output_bytes_sent": sent_bytes,
+                        "truncated": raw_bytes > sent_bytes,
+                        "tool_calls": stats["tool_calls"],
+                        "auto_limit_hits": stats["auto_limit_hits"],
+                        "session_id": session_id,
+                        "error": error,
+                    })
+                except Exception:
+                    pass
+            return result
 
         # Pipeline: 1. validate → 2. transform → 3. wrap → 4. exec
         try:
@@ -455,7 +517,9 @@ class CodeExecutor:
 
         code = _transform_last_expr(code)
 
-        namespace, framework_names = self._build_namespace(session_id, auto_limit)
+        namespace, framework_names = self._build_namespace(
+            session_id, auto_limit, stats
+        )
 
         output_lines: list[str] = []
 
