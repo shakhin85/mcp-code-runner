@@ -133,6 +133,7 @@ async def execute_code(
     timeout: float = 60.0,
     max_output_bytes: int = 20000,
     session_id: str | None = None,
+    auto_limit: int = 500,
 ) -> str:
     """
     Execute Python code with access to all connected MCP tools.
@@ -156,6 +157,13 @@ async def execute_code(
             follow-up call can reuse fetched data without re-running the
             MCP query. Idle sessions expire after ~10 minutes; ≤20 sessions
             are kept at once (LRU eviction). Omit for one-shot execution.
+        auto_limit: Default row cap applied to bare SELECT queries sent to
+            postgres_*/mssql execute_sql tools (default 500). The proxy
+            rewrites `SELECT ... FROM t` into `SELECT ... FROM t LIMIT 500`
+            (or `SELECT TOP 500 ...` for MSSQL) when the user hasn't set
+            their own LIMIT/TOP. INSERT/UPDATE/DELETE/DDL are never rewritten.
+            Pass 0 to disable entirely, or a larger value when you really
+            need more rows (combine with max_output_bytes).
     """
     executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
 
@@ -164,6 +172,7 @@ async def execute_code(
         timeout=timeout,
         max_output_bytes=max_output_bytes,
         session_id=session_id,
+        auto_limit=auto_limit,
     )
 
     lines = []

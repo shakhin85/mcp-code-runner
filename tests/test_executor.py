@@ -290,6 +290,82 @@ class TestResultParsing:
         assert first["a"] == decimal.Decimal("1.00")
 
 
+class TestAutoLimitInjection:
+    """Proxy must inject a default LIMIT into SQL queries for postgres/mssql
+    servers so the model doesn't accidentally burn context on a huge result."""
+
+    def _make_ns(self, server_name, auto_limit=500):
+        session = _FakeSession("[]")
+        tool = _FakeTool("execute_sql")
+        ns = _ToolNamespace(server_name, session, [tool], auto_limit=auto_limit)
+        return ns, session
+
+    def test_postgres_sql_kwarg_rewritten(self):
+        ns, session = self._make_ns("postgres_test")
+        asyncio.run(ns.execute_sql(sql="SELECT * FROM t"))
+        assert "LIMIT 500" in session.last_call[1]["sql"].upper()
+
+    def test_mssql_query_kwarg_rewritten_with_top(self):
+        ns, session = self._make_ns("mssql")
+        asyncio.run(ns.execute_sql(query="SELECT * FROM t"))
+        assert "TOP" in session.last_call[1]["query"].upper()
+        assert "500" in session.last_call[1]["query"]
+
+    def test_existing_limit_preserved(self):
+        ns, session = self._make_ns("postgres_test")
+        asyncio.run(ns.execute_sql(sql="SELECT * FROM t LIMIT 10"))
+        called_sql = session.last_call[1]["sql"]
+        assert "500" not in called_sql
+        assert "10" in called_sql
+
+    def test_non_sql_server_untouched(self):
+        # forgetful.execute_forgetful_tool(tool_name=..., arguments=...) —
+        # pretend SELECT-like string; we must NOT rewrite because server isn't SQL.
+        ns, session = self._make_ns("forgetful")
+        asyncio.run(ns.execute_sql(sql="SELECT * FROM t"))
+        assert session.last_call[1]["sql"] == "SELECT * FROM t"
+
+    def test_insert_untouched(self):
+        ns, session = self._make_ns("postgres_test")
+        asyncio.run(ns.execute_sql(sql="INSERT INTO t VALUES (1)"))
+        assert session.last_call[1]["sql"] == "INSERT INTO t VALUES (1)"
+
+    def test_auto_limit_zero_disables_injection(self):
+        ns, session = self._make_ns("postgres_test", auto_limit=0)
+        asyncio.run(ns.execute_sql(sql="SELECT * FROM t"))
+        assert session.last_call[1]["sql"] == "SELECT * FROM t"
+
+    def test_no_sql_kwarg_no_error(self):
+        # Some SQL tools may have other methods; if sql/query missing, do nothing.
+        ns, session = self._make_ns("postgres_test")
+        asyncio.run(ns.execute_sql())
+        assert session.last_call[1] == {}
+
+    def test_non_execute_sql_tool_untouched(self):
+        session = _FakeSession("[]")
+        tool = _FakeTool("list_schemas")
+        ns = _ToolNamespace("postgres_test", session, [tool], auto_limit=500)
+        asyncio.run(ns.list_schemas(sql="SELECT * FROM t"))
+        assert session.last_call[1]["sql"] == "SELECT * FROM t"
+
+    def test_executor_propagates_auto_limit(self):
+        # End-to-end: CodeExecutor.execute passes auto_limit through to the
+        # namespace so user code gets rewritten SQL on its way to the session.
+        from code_runner.executor import CodeExecutor
+
+        class FakePool:
+            def __init__(self):
+                self.session = _FakeSession("[{'n': 1}]")
+                self.sessions = {"postgres_test": self.session}
+                self.tools = {"postgres_test": [_FakeTool("execute_sql")]}
+
+        pool = FakePool()
+        executor = CodeExecutor(pool)
+        code = 'result = await postgres_test.execute_sql(sql="SELECT * FROM t")'
+        asyncio.run(executor.execute(code, auto_limit=500))
+        assert "LIMIT 500" in pool.session.last_call[1]["sql"].upper()
+
+
 class TestAutoDisplay:
     @pytest.fixture
     def executor(self):

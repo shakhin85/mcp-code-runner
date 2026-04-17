@@ -24,6 +24,7 @@ from mcp import ClientSession
 from mcp.types import Tool
 
 from .config_reader import server_name_to_py
+from .sql_limit import inject_limit
 
 
 SAFE_BUILTINS = {
@@ -69,10 +70,42 @@ _REPR_ALLOWED_NODES: tuple = (
 )
 
 
+def _validate_repr_ast(tree: ast.AST) -> None:
+    for node in ast.walk(tree):
+        if not isinstance(node, _REPR_ALLOWED_NODES):
+            raise ValueError(f"disallowed node: {type(node).__name__}")
+        if isinstance(node, ast.Name):
+            if node.id not in _REPR_NAMESPACE:
+                raise ValueError(f"disallowed name: {node.id}")
+        if isinstance(node, ast.Attribute):
+            root: ast.AST = node
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if not isinstance(root, ast.Name) or root.id not in _REPR_NAMESPACE:
+                raise ValueError("disallowed attribute root")
+
+
 DEFAULT_MAX_OUTPUT_BYTES = 20000
+DEFAULT_AUTO_LIMIT = 500
 
 SESSION_TTL = 600.0  # seconds; idle sessions older than this are evicted
 MAX_SESSIONS = 20    # LRU cap to bound memory
+
+# Server-name prefix → sqlglot dialect for auto-LIMIT injection.
+# Exact-match "mssql" included; postgres variants matched by prefix.
+_SQL_DIALECT_BY_SERVER: dict[str, str] = {"mssql": "mssql"}
+_SQL_PREFIXES: tuple[str, ...] = ("postgres",)
+_SQL_TOOL_NAMES: frozenset[str] = frozenset({"execute_sql"})
+_SQL_ARG_NAMES: tuple[str, ...] = ("sql", "query")
+
+
+def _dialect_for_server(server_name: str) -> str | None:
+    if server_name in _SQL_DIALECT_BY_SERVER:
+        return _SQL_DIALECT_BY_SERVER[server_name]
+    for prefix in _SQL_PREFIXES:
+        if server_name.startswith(prefix):
+            return "postgres"
+    return None
 
 
 class _SessionState:
@@ -101,21 +134,6 @@ def _truncate_output(output: str, max_bytes: int) -> str:
         f"{max_bytes}. Use SQL LIMIT/TOP, pagination, or narrow your query.]"
     )
     return kept + footer
-
-
-def _validate_repr_ast(tree: ast.AST) -> None:
-    for node in ast.walk(tree):
-        if not isinstance(node, _REPR_ALLOWED_NODES):
-            raise ValueError(f"disallowed node: {type(node).__name__}")
-        if isinstance(node, ast.Name):
-            if node.id not in _REPR_NAMESPACE:
-                raise ValueError(f"disallowed name: {node.id}")
-        if isinstance(node, ast.Attribute):
-            root: ast.AST = node
-            while isinstance(root, ast.Attribute):
-                root = root.value
-            if not isinstance(root, ast.Name) or root.id not in _REPR_NAMESPACE:
-                raise ValueError("disallowed attribute root")
 
 
 class _SandboxTimeout(BaseException):
@@ -250,20 +268,41 @@ def _transform_last_expr(code: str) -> str:
 class _ToolNamespace:
     """Proxy object representing a single MCP server's tools in exec namespace."""
 
-    def __init__(self, server_name: str, session: ClientSession, tools: list[Tool]):
+    def __init__(
+        self,
+        server_name: str,
+        session: ClientSession,
+        tools: list[Tool],
+        auto_limit: int = 0,
+    ):
         self._server_name = server_name
         self._session = session
         self._tools = {t.name: t for t in tools}
+        self._auto_limit = auto_limit
+        self._sql_dialect = _dialect_for_server(server_name) if auto_limit > 0 else None
 
         for tool in tools:
             py_attr = tool.name.replace("-", "_")
             setattr(self, py_attr, self._make_wrapper(tool.name))
+
+    def _maybe_inject_limit(self, tool_name: str, kwargs: dict) -> None:
+        """Mutate kwargs to add default LIMIT/TOP for bare SELECT queries."""
+        if self._sql_dialect is None or tool_name not in _SQL_TOOL_NAMES:
+            return
+        for arg in _SQL_ARG_NAMES:
+            original = kwargs.get(arg)
+            if isinstance(original, str) and original:
+                kwargs[arg] = inject_limit(
+                    original, self._auto_limit, self._sql_dialect
+                )
+                break
 
     def _make_wrapper(self, tool_name: str):
         session = self._session
         server = self._server_name
 
         async def wrapper(**kwargs):
+            self._maybe_inject_limit(tool_name, kwargs)
             result = await session.call_tool(tool_name, kwargs)
             texts = []
             for content in result.content:
@@ -334,7 +373,9 @@ class CodeExecutor:
         return state
 
     def _build_namespace(
-        self, session_id: str | None = None
+        self,
+        session_id: str | None = None,
+        auto_limit: int = 0,
     ) -> tuple[dict[str, Any], set[str]]:
         # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
         safe_builtins = {name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)}
@@ -348,7 +389,9 @@ class CodeExecutor:
         for server_name, session in self.pool.sessions.items():
             py_name = server_name_to_py(server_name)
             tools = self.pool.tools.get(server_name, [])
-            namespace[py_name] = _ToolNamespace(server_name, session, tools)
+            namespace[py_name] = _ToolNamespace(
+                server_name, session, tools, auto_limit=auto_limit
+            )
 
         # Snapshot framework-provided names so we can later diff to
         # extract only the user's own variables for persistence.
@@ -379,13 +422,14 @@ class CodeExecutor:
         timeout: float = 60.0,
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
         session_id: str | None = None,
+        auto_limit: int = DEFAULT_AUTO_LIMIT,
     ) -> dict[str, Any]:
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
         # MCP stdio case.
         async with self._exec_lock:
             return await self._execute_locked(
-                code, timeout, max_output_bytes, session_id
+                code, timeout, max_output_bytes, session_id, auto_limit
             )
 
     async def _execute_locked(
@@ -394,6 +438,7 @@ class CodeExecutor:
         timeout: float,
         max_output_bytes: int,
         session_id: str | None,
+        auto_limit: int,
     ) -> dict[str, Any]:
         def finalize(success: bool, output: str, error: str | None) -> dict[str, Any]:
             return {
@@ -410,7 +455,7 @@ class CodeExecutor:
 
         code = _transform_last_expr(code)
 
-        namespace, framework_names = self._build_namespace(session_id)
+        namespace, framework_names = self._build_namespace(session_id, auto_limit)
 
         output_lines: list[str] = []
 
