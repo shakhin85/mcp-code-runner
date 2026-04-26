@@ -17,7 +17,7 @@ class WorkspaceError(ValueError):
     """Raised on unsafe paths, bad session ids, or write-cap violations."""
 
 
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")
 
 
 class WorkspaceManager:

@@ -67,3 +67,17 @@ def test_session_id_must_be_safe(wm):
         wm.resolve_path("../escape", "f.txt")
     with pytest.raises(WorkspaceError, match="session_id"):
         wm.resolve_path("a/b", "f.txt")
+
+
+def test_session_id_rejects_dot_and_dotdot(wm):
+    for bad in (".", "..", ".hidden", "-leading-dash"):
+        with pytest.raises(WorkspaceError, match="session_id"):
+            wm.resolve_path(bad, "f.txt")
+
+
+def test_resolve_path_returns_value_for_nul_byte_path(wm):
+    # We don't add an explicit NUL-byte check in resolve_path — the
+    # underlying os.path.realpath / open raise ValueError. Pin the
+    # current behavior so a future refactor flags any change.
+    with pytest.raises(ValueError, match="null"):
+        wm.resolve_path("sess1", "a\x00b")
