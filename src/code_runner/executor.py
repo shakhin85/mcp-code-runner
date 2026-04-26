@@ -27,6 +27,7 @@ from mcp.types import Tool
 from .config_reader import server_name_to_py
 from .metrics import MetricsRecorder
 from .sql_limit import inject_limit
+from .skills import SkillsNamespace
 from .workspace import WorkspaceManager, safe_open, WorkspaceError
 
 
@@ -385,10 +386,12 @@ class CodeExecutor:
         pool,
         recorder: "MetricsRecorder | None" = None,
         workspace: "WorkspaceManager | None" = None,
+        skills: "SkillsNamespace | None" = None,
     ):
         self.pool = pool
         self.recorder = recorder
         self.workspace = workspace if workspace is not None else WorkspaceManager(DEFAULT_WORKSPACE_ROOT)
+        self.skills = skills
         # Signals are process-global and can only be armed from the main
         # thread — serialize executions so two concurrent calls can't clobber
         # each other's SIGALRM state.
@@ -462,6 +465,23 @@ class CodeExecutor:
                 stats=stats,
                 recorder=self.recorder,
             )
+
+        if self.skills is not None:
+            namespace["skills"] = self.skills
+            # Bind each skill's `open` to the sandbox so skill code that
+            # writes to a path lands inside the per-session workspace —
+            # otherwise bare open(...) inside a skill resolves to the
+            # real builtin and writes to the executor's cwd. The exec
+            # lock serializes runs, so this per-call mutation is safe.
+            user_open = namespace["open"]
+            for proxy in self.skills._proxies.values():
+                callables = getattr(proxy, "_callables", None)
+                if not callables:
+                    continue
+                for fn in callables.values():
+                    g = getattr(fn, "__globals__", None)
+                    if g is not None:
+                        g["open"] = user_open
 
         # Snapshot framework-provided names so we can later diff to
         # extract only the user's own variables for persistence.

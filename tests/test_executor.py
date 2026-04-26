@@ -627,3 +627,61 @@ class TestWorkspaceIntegration:
         executor._sessions["evictme"].last_access = 0.0
         executor._evict_expired_sessions()
         assert not sess_dir.exists()
+
+
+class TestSkillsIntegration:
+    """Task 6: skills namespace injected into sandbox."""
+
+    @pytest.fixture
+    def fixture_dir(self):
+        from pathlib import Path
+        return Path(__file__).parent / "skills_fixtures"
+
+    def _make_executor(self, tmp_path, fixture_dir):
+        from code_runner.workspace import WorkspaceManager
+        from code_runner.skills import SkillLoader, SkillsNamespace
+        ns = SkillsNamespace(SkillLoader(fixture_dir).discover())
+        class FakePool:
+            sessions = {}
+            tools = {}
+        return CodeExecutor(
+            FakePool(),
+            workspace=WorkspaceManager(tmp_path),
+            skills=ns,
+        )
+
+    def test_skill_callable_from_sandbox(self, tmp_path, fixture_dir):
+        ex = self._make_executor(tmp_path, fixture_dir)
+        code = (
+            "rows = [{'a': 1, 'b': 'x'}, {'a': 2, 'b': 'y'}]\n"
+            "n = skills.sample_csv.write_csv(rows, 'out.csv')\n"
+            "print(n)\n"
+            "print(open('out.csv','r').read())"
+        )
+        result = asyncio.run(ex.execute(code, session_id="s1"))
+        assert result["success"] is True, result["error"]
+        assert "2" in result["output"]
+        assert "a,b" in result["output"]
+
+    def test_skills_unknown_name_raises_inside_sandbox(self, tmp_path, fixture_dir):
+        ex = self._make_executor(tmp_path, fixture_dir)
+        result = asyncio.run(ex.execute("skills.nope", session_id="s2"))
+        assert result["success"] is False
+        assert "unknown" in (result["error"] or "").lower() or "skills" in (result["error"] or "").lower()
+
+    def test_skills_absent_when_not_provided(self, tmp_path):
+        from code_runner.workspace import WorkspaceManager
+        class FakePool:
+            sessions = {}
+            tools = {}
+        ex = CodeExecutor(FakePool(), workspace=WorkspaceManager(tmp_path))
+        result = asyncio.run(ex.execute("print(skills)", session_id="s3"))
+        assert result["success"] is False
+        assert "skills" in (result["error"] or "").lower()
+
+    def test_skills_not_persisted_to_user_vars(self, tmp_path, fixture_dir):
+        ex = self._make_executor(tmp_path, fixture_dir)
+        asyncio.run(ex.execute("x = 1", session_id="s4"))
+        # skills must not leak into the persisted user_vars
+        state = ex._sessions["s4"]
+        assert "skills" not in state.user_vars
