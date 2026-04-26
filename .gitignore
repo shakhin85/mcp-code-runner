@@ -6,3 +6,4 @@ models/
 .pytest_tmp/
 .env*
 !.env.example
+.mcp.json
