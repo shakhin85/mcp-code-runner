@@ -98,3 +98,21 @@ def test_broken_skill_raises_only_on_access(tmp_path):
     msg = str(exc_info.value)
     assert "broken" in msg  # skill name preserved
     assert "syntax" in msg.lower() or "invalid" in msg.lower()  # original SyntaxError preserved
+
+
+def test_bind_overrides_builtin_for_all_skills(tmp_path):
+    # Two skills, both calling print() — bind print to capture, verify both see it.
+    a = tmp_path / "a"; a.mkdir()
+    (a / "script.py").write_text("def go():\n    print('from-a')\n")
+    (a / "SKILL.md").write_text("---\ndescription: a\n---")
+    b = tmp_path / "b"; b.mkdir()
+    (b / "script.py").write_text("def go():\n    print('from-b')\n")
+    (b / "SKILL.md").write_text("---\ndescription: b\n---")
+
+    ns = SkillsNamespace(SkillLoader(tmp_path).discover())
+    captured = []
+    ns.bind("print", lambda *args, **_kw: captured.append(" ".join(map(str, args))))
+
+    ns.a.go()
+    ns.b.go()
+    assert captured == ["from-a", "from-b"]

@@ -468,20 +468,10 @@ class CodeExecutor:
 
         if self.skills is not None:
             namespace["skills"] = self.skills
-            # Bind each skill's `open` to the sandbox so skill code that
-            # writes to a path lands inside the per-session workspace —
-            # otherwise bare open(...) inside a skill resolves to the
-            # real builtin and writes to the executor's cwd. The exec
-            # lock serializes runs, so this per-call mutation is safe.
-            user_open = namespace["open"]
-            for proxy in self.skills._proxies.values():
-                callables = getattr(proxy, "_callables", None)
-                if not callables:
-                    continue
-                for fn in callables.values():
-                    g = getattr(fn, "__globals__", None)
-                    if g is not None:
-                        g["open"] = user_open
+            # Skill code calling open(...) goes through the same workspace-bound
+            # safe_open as the user's top-level code. The exec lock serializes
+            # runs so this per-call rebind is safe.
+            self.skills.bind("open", namespace["open"])
 
         # Snapshot framework-provided names so we can later diff to
         # extract only the user's own variables for persistence.

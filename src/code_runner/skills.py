@@ -136,14 +136,21 @@ class SkillsNamespace:
     MCP tool (Task 7) lets the LLM author code into that directory, so
     review save_skill carefully before widening any of the loader, exec,
     or builtins surface here.
+
+    Builtin binding: a single shared __builtins__ dict (a copy of the
+    real builtins) is given to every skill. Callers can override entries
+    with `bind(name, value)` — used by the executor to point `open` at
+    the per-session workspace-bound safe_open before each user run.
     """
 
-    __slots__ = ("_proxies",)
+    __slots__ = ("_proxies", "_shared_builtins")
 
     def __init__(self, specs: dict[str, SkillSpec]) -> None:
         self._proxies: dict[str, Any] = {}
+        # Shared so a single bind() reaches every skill at lookup time.
+        self._shared_builtins: dict[str, Any] = dict(_builtins.__dict__)
         for name, spec in specs.items():
-            module_ns: dict[str, Any] = {"__builtins__": _builtins.__dict__}
+            module_ns: dict[str, Any] = {"__builtins__": self._shared_builtins}
             try:
                 code = compile(
                     spec.source, str(spec.path / "script.py"), "exec"
@@ -157,6 +164,14 @@ class SkillsNamespace:
                 if callable(v) and not k.startswith("_")
             }
             self._proxies[name] = SkillProxy(name, callables)
+
+    def bind(self, name: str, value: Any) -> None:
+        """Override a builtin seen by all loaded skills.
+
+        Called by the executor before each run to point `open` at the
+        sandbox-bound safe_open for the current session. Idempotent.
+        """
+        self._shared_builtins[name] = value
 
     def __getattr__(self, attr: str) -> Any:
         if attr.startswith("_"):

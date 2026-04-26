@@ -685,3 +685,17 @@ class TestSkillsIntegration:
         # skills must not leak into the persisted user_vars
         state = ex._sessions["s4"]
         assert "skills" not in state.user_vars
+
+    def test_skill_open_writes_into_workspace_via_bind(self, tmp_path, fixture_dir):
+        # Re-verify the sample_csv path now relies on bind() rather than
+        # the previous reach-in patch.
+        ex = self._make_executor(tmp_path, fixture_dir)
+        code = (
+            "n = skills.sample_csv.write_csv("
+            "    [{'k': 1}], 'rebound.csv')\n"
+            "print(open('rebound.csv','r').read())"
+        )
+        result = asyncio.run(ex.execute(code, session_id="sb"))
+        assert result["success"] is True, result["error"]
+        assert "k" in result["output"] and "1" in result["output"]
+        assert (tmp_path / "sb" / "rebound.csv").exists()
