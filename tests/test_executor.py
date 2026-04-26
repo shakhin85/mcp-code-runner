@@ -572,3 +572,58 @@ class TestPersistentNamespace:
         r = asyncio.run(executor.execute("x * 2", session_id="s"))
         assert r["success"] is True
         assert "14" in r["output"]
+
+
+class TestWorkspaceIntegration:
+    """Task 3: open() wiring + eviction cleanup."""
+
+    @pytest.fixture
+    def executor(self, tmp_path):
+        from code_runner.workspace import WorkspaceManager
+        class FakePool:
+            sessions = {}
+            tools = {}
+        return CodeExecutor(FakePool(), workspace=WorkspaceManager(tmp_path))
+
+    def test_open_writes_into_session_workspace(self, executor, tmp_path):
+        code = (
+            "with open('greeting.txt', 'w') as f:\n"
+            "    f.write('hi')\n"
+            "print('done')"
+        )
+        result = asyncio.run(executor.execute(code, session_id="s1"))
+        assert result["success"] is True, result["error"]
+        assert (tmp_path / "s1" / "greeting.txt").read_text() == "hi"
+
+    def test_open_persists_across_calls_in_same_session(self, executor):
+        r1 = asyncio.run(executor.execute(
+            "with open('x.txt','w') as f: f.write('abc')",
+            session_id="s2",
+        ))
+        assert r1["success"] is True, r1["error"]
+        r2 = asyncio.run(executor.execute(
+            "print(open('x.txt','r').read())",
+            session_id="s2",
+        ))
+        assert r2["success"] is True, r2["error"]
+        assert "abc" in r2["output"]
+
+    def test_open_unavailable_without_session(self, executor):
+        result = asyncio.run(executor.execute(
+            "open('x.txt','w')",
+            session_id=None,
+        ))
+        assert result["success"] is False
+
+    def test_eviction_cleans_workspace(self, executor, tmp_path):
+        r = asyncio.run(executor.execute(
+            "open('a.txt','w').write('1')",
+            session_id="evictme",
+        ))
+        assert r["success"] is True, r["error"]
+        sess_dir = tmp_path / "evictme"
+        assert sess_dir.exists()
+        # Force expiration
+        executor._sessions["evictme"].last_access = 0.0
+        executor._evict_expired_sessions()
+        assert not sess_dir.exists()
