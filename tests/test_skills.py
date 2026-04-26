@@ -93,5 +93,8 @@ def test_broken_skill_raises_only_on_access(tmp_path):
     (skill_dir / "SKILL.md").write_text("---\ndescription: broken\n---")
     ns = SkillsNamespace(SkillLoader(tmp_path).discover())
     # Construction did not raise
-    with pytest.raises(RuntimeError, match="broken"):
+    with pytest.raises(RuntimeError) as exc_info:
         ns.broken.f
+    msg = str(exc_info.value)
+    assert "broken" in msg  # skill name preserved
+    assert "syntax" in msg.lower() or "invalid" in msg.lower()  # original SyntaxError preserved

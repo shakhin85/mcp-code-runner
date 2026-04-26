@@ -11,9 +11,11 @@ executor and the namespace proxy is handled in Task 5.
 
 from __future__ import annotations
 
+import builtins as _builtins
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -70,10 +72,6 @@ class SkillLoader:
                 path=child,
             )
         return out
-
-
-import builtins as _builtins
-from typing import Any
 
 
 class SkillProxy:
@@ -133,6 +131,11 @@ class SkillsNamespace:
     module dict with full builtins (skills are trusted local code; we
     don't run AST validation on them). Public callables become attributes
     on the per-skill SkillProxy.
+
+    Trust envelope: the skills directory is user-owned. The save_skill
+    MCP tool (Task 7) lets the LLM author code into that directory, so
+    review save_skill carefully before widening any of the loader, exec,
+    or builtins surface here.
     """
 
     __slots__ = ("_proxies",)
