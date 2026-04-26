@@ -81,3 +81,71 @@ def test_resolve_path_returns_value_for_nul_byte_path(wm):
     # current behavior so a future refactor flags any change.
     with pytest.raises(ValueError, match="null"):
         wm.resolve_path("sess1", "a\x00b")
+
+
+from code_runner.workspace import safe_open, DEFAULT_WRITE_CAP
+
+
+def test_safe_open_write_text(wm):
+    with safe_open(wm, "sess1", "out.txt", "w") as f:
+        f.write("hello")
+    p = wm.resolve_path("sess1", "out.txt")
+    assert p.read_text() == "hello"
+
+
+def test_safe_open_read_after_write(wm):
+    with safe_open(wm, "sess1", "out.txt", "w") as f:
+        f.write("hi")
+    with safe_open(wm, "sess1", "out.txt", "r") as f:
+        assert f.read() == "hi"
+
+
+def test_safe_open_binary(wm):
+    with safe_open(wm, "sess1", "blob.bin", "wb") as f:
+        f.write(b"\x00\x01\x02")
+    with safe_open(wm, "sess1", "blob.bin", "rb") as f:
+        assert f.read() == b"\x00\x01\x02"
+
+
+def test_safe_open_append(wm):
+    with safe_open(wm, "sess1", "log.txt", "w") as f:
+        f.write("a")
+    with safe_open(wm, "sess1", "log.txt", "a") as f:
+        f.write("b")
+    p = wm.resolve_path("sess1", "log.txt")
+    assert p.read_text() == "ab"
+
+
+def test_safe_open_rejects_other_modes(wm):
+    for mode in ("x", "r+", "w+", "rt+"):
+        with pytest.raises(WorkspaceError, match="mode"):
+            safe_open(wm, "sess1", "f.txt", mode)
+
+
+def test_safe_open_creates_parent_dirs(wm):
+    with safe_open(wm, "sess1", "deep/nested/f.txt", "w") as f:
+        f.write("x")
+    assert wm.resolve_path("sess1", "deep/nested/f.txt").read_text() == "x"
+
+
+def test_safe_open_write_cap_enforced(wm):
+    with pytest.raises(WorkspaceError, match="cap"):
+        with safe_open(wm, "sess1", "big.bin", "wb", max_bytes=10) as f:
+            f.write(b"x" * 11)
+
+
+def test_safe_open_write_cap_across_multiple_writes(wm):
+    with safe_open(wm, "sess1", "big.bin", "wb", max_bytes=10) as f:
+        f.write(b"x" * 5)
+        f.write(b"y" * 5)  # exactly at cap, fine
+        with pytest.raises(WorkspaceError, match="cap"):
+            f.write(b"z")
+
+
+def test_safe_open_default_cap_is_50mb():
+    assert DEFAULT_WRITE_CAP == 50 * 1024 * 1024
+
+
+def test_safe_open_traversal_rejected(wm):
+    with pytest.raises(WorkspaceError, match="traversal"):
+        safe_open(wm, "sess1", "../escape.txt", "w")

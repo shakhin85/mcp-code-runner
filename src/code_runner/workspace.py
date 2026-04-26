@@ -60,3 +60,69 @@ class WorkspaceManager:
             return
         if sess_dir.exists():
             shutil.rmtree(sess_dir, ignore_errors=True)
+
+
+DEFAULT_WRITE_CAP = 50 * 1024 * 1024  # 50 MB per file
+_ALLOWED_MODES = frozenset({"r", "rb", "w", "wb", "a", "ab"})
+
+
+class _CappedFile:
+    """File proxy that raises WorkspaceError if cumulative bytes exceed max_bytes.
+
+    For append mode the starting position counts toward the cap so an existing
+    file that's already near-cap can't be silently grown past it.
+    """
+
+    def __init__(self, fp, max_bytes: int, start_bytes: int = 0) -> None:
+        self._fp = fp
+        self._max = max_bytes
+        self._written = start_bytes
+
+    def write(self, data):
+        size = len(data)
+        if self._written + size > self._max:
+            self._fp.close()
+            raise WorkspaceError(
+                f"write cap exceeded: {self._written + size} > {self._max} bytes"
+            )
+        self._written += size
+        return self._fp.write(data)
+
+    def __getattr__(self, name):
+        return getattr(self._fp, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return self._fp.__exit__(*exc)
+
+
+def safe_open(
+    wm: "WorkspaceManager",
+    session_id: str,
+    path: str,
+    mode: str = "r",
+    *,
+    max_bytes: int = DEFAULT_WRITE_CAP,
+):
+    """Open a file under <wm.root>/<session_id>/, with mode whitelist + write cap.
+
+    Modes 'w', 'wb', 'a', 'ab' return a _CappedFile that enforces max_bytes
+    across the lifetime of the handle. Read modes return a plain file object.
+    Parent directories are created on demand for write/append modes.
+    """
+    if mode not in _ALLOWED_MODES:
+        raise WorkspaceError(
+            f"mode {mode!r} not allowed; use one of {sorted(_ALLOWED_MODES)}"
+        )
+    target = wm.resolve_path(session_id, path)
+
+    is_write = any(c in mode for c in "wa")
+    if is_write:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        start = target.stat().st_size if (target.exists() and "a" in mode) else 0
+        fp = open(target, mode)
+        return _CappedFile(fp, max_bytes=max_bytes, start_bytes=start)
+
+    return open(target, mode)
