@@ -62,7 +62,7 @@ class WorkspaceManager:
             shutil.rmtree(sess_dir, ignore_errors=True)
 
 
-DEFAULT_WRITE_CAP = 50 * 1024 * 1024  # 50 MB per file
+DEFAULT_WRITE_CAP = 50 * 1024 * 1024  # 50 MB per file handle (resets on reopen)
 _ALLOWED_MODES = frozenset({"r", "rb", "w", "wb", "a", "ab"})
 _DENIED_FILE_ATTRS = frozenset({
     "fileno", "detach", "buffer", "raw",
@@ -70,10 +70,12 @@ _DENIED_FILE_ATTRS = frozenset({
 
 
 class _CappedFile:
-    """File proxy that enforces a cumulative bytes-written cap.
+    """File proxy that enforces a per-handle bytes-written cap.
 
-    The cap counts bytes passed to write/writelines, not the resulting
-    file size — a seek+overwrite pattern still consumes the cap. Methods
+    The cap counts bytes passed to write/writelines on this handle, not
+    the resulting file size — a seek+overwrite still consumes the cap.
+    The cap is per-open: reopening the same file resets the counter, so
+    this is a runaway-write guard, not a session-wide disk quota. Methods
     that would expose the underlying fd or buffered stream (fileno,
     detach, buffer, raw) are blocked so user code cannot escape via
     os.write or stream-stealing.
@@ -122,9 +124,12 @@ def safe_open(
 ):
     """Open a file under <wm.root>/<session_id>/, with mode whitelist + write cap.
 
-    Modes 'w', 'wb', 'a', 'ab' return a _CappedFile that enforces max_bytes
-    across the lifetime of the handle. Read modes return a plain file object.
-    Parent directories are created on demand for write/append modes.
+    Modes 'w', 'wb', 'a', 'ab' return a _CappedFile that enforces
+    `max_bytes` for the lifetime of THIS handle. Reopening the file
+    resets the counter — this is a guard against a single runaway
+    write loop, not a session-wide disk quota. Read modes return a
+    plain file object. Parent directories are created on demand for
+    write/append modes.
     """
     if mode not in _ALLOWED_MODES:
         raise WorkspaceError(

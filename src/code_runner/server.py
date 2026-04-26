@@ -21,7 +21,7 @@ from .executor import CodeExecutor
 from .metrics import recorder_from_env
 from .schema_gen import generate_server_overview, generate_stubs_for_server
 from .config_reader import server_name_to_py
-from .skills import SkillLoader, SkillsNamespace, write_skill_files
+from .skills import SkillLoader, SkillSpec, SkillsNamespace, write_skill_files
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ def _search_tools_logic(
     return "\n\n".join(sections)
 
 
-def _format_skills_section(specs: dict[str, "SkillSpec"]) -> str:
+def _format_skills_section(specs: dict[str, SkillSpec]) -> str:
     """Render the '# === Skills ===' section for list_available_tools.
 
     Returns an empty string when there are no skills so the caller

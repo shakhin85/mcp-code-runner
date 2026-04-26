@@ -4,19 +4,19 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
 
 ## Modules
 
-- `server.py` — FastMCP entry point. Tools: `list_available_tools`, `search_tools`, `execute_code`, `get_metrics`, `save_skill` (planned).
+- `server.py` — FastMCP entry point. Tools: `list_available_tools`, `search_tools`, `execute_code`, `get_metrics`, `save_skill`.
 - `executor.py` — `CodeExecutor`: validates code, builds namespace, runs with top-level-await, persists user vars per `session_id`.
 - `client_pool.py` — `MCPClientPool`: long-lived stdio/HTTP MCP client connections.
 - `config_reader.py` — reads `~/.claude.json`, project `.claude/settings.json`, project `.mcp.json`. Detects project dir via `CLAUDE_PROJECT_DIR` or `/proc` walk.
 - `schema_gen.py` — JSON-schema → Python stub strings for `search_tools`.
 - `sql_limit.py` — sqlglot-based auto-LIMIT/TOP injection for bare SELECTs.
 - `metrics.py` — JSONL recorder for `tool_call` and `execute_code` events.
-- `workspace.py` (planned) — per-session filesystem at `~/.cache/code-runner/workspace/<session_id>/`, exposed via injected `open()`.
-- `skills.py` (planned) — discovers `~/.claude/code-runner-skills/<name>/`, exposes `skills.<name>.<fn>` proxy.
+- `workspace.py` — per-session filesystem at `~/.cache/code-runner/workspace/<session_id>/`, exposed via injected `open()`.
+- `skills.py` — discovers `~/.claude/code-runner-skills/<name>/`, exposes `skills.<name>.<fn>` proxy.
 
 ## Dev
 
-- `uv run pytest` — full test suite (135+ tests baseline)
+- `uv run pytest` — full test suite (198 tests)
 - `uv run code-runner` — start server (stdio transport)
 - `CODE_RUNNER_METRICS=0` disables the JSONL metrics recorder (default: enabled, writes to `~/.cache/code-runner/metrics.jsonl`)
 
