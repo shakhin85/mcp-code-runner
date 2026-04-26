@@ -18,7 +18,7 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
 
 - `uv run pytest` — full test suite (135+ tests baseline)
 - `uv run code-runner` — start server (stdio transport)
-- `CODE_RUNNER_METRICS=1` env enables metrics recorder
+- `CODE_RUNNER_METRICS=0` disables the JSONL metrics recorder (default: enabled, writes to `~/.cache/code-runner/metrics.jsonl`)
 
 ## Security
 
