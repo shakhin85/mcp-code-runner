@@ -105,6 +105,28 @@ def _search_tools_logic(
     return "\n\n".join(sections)
 
 
+def _format_skills_section(specs: dict[str, "SkillSpec"]) -> str:
+    """Render the '# === Skills ===' section for list_available_tools.
+
+    Returns an empty string when there are no skills so the caller
+    can unconditionally append.
+    """
+    if not specs:
+        return ""
+    lines = [
+        "",
+        "# === Skills ===",
+        "# (call as skills.<name>.<fn>(...))",
+    ]
+    for name in sorted(specs):
+        desc = (specs[name].description or "").strip()
+        line = f"# - skills.{name}"
+        if desc:
+            line += f": {desc}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 @mcp.tool()
 async def list_available_tools(ctx: Context) -> str:
     """
@@ -125,6 +147,10 @@ async def list_available_tools(ctx: Context) -> str:
         for name, err in pool.failed.items():
             lines.append(f"# {name}: {err}")
         overview += "\n".join(lines)
+
+    loader = ctx.request_context.lifespan_context.get("skills_loader")
+    if loader is not None:
+        overview += _format_skills_section(loader.discover())
 
     return overview
 
