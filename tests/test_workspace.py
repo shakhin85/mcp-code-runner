@@ -149,3 +149,24 @@ def test_safe_open_default_cap_is_50mb():
 def test_safe_open_traversal_rejected(wm):
     with pytest.raises(WorkspaceError, match="traversal"):
         safe_open(wm, "sess1", "../escape.txt", "w")
+
+
+def test_safe_open_writelines_respects_cap(wm):
+    with pytest.raises(WorkspaceError, match="cap"):
+        with safe_open(wm, "sess1", "big.bin", "wb", max_bytes=10) as f:
+            f.writelines([b"x" * 6, b"y" * 6])  # 12 bytes total
+
+
+def test_safe_open_zero_byte_write_at_cap_ok(wm):
+    with safe_open(wm, "sess1", "edge.bin", "wb", max_bytes=5) as f:
+        f.write(b"hello")
+        f.write(b"")  # zero-byte at cap is fine
+        with pytest.raises(WorkspaceError, match="cap"):
+            f.write(b"x")
+
+
+def test_safe_open_blocks_fd_exposing_attrs(wm):
+    with safe_open(wm, "sess1", "blob.bin", "wb") as f:
+        for attr in ("fileno", "detach", "buffer", "raw"):
+            with pytest.raises(WorkspaceError, match="bypass"):
+                getattr(f, attr)

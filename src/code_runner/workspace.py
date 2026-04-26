@@ -64,13 +64,19 @@ class WorkspaceManager:
 
 DEFAULT_WRITE_CAP = 50 * 1024 * 1024  # 50 MB per file
 _ALLOWED_MODES = frozenset({"r", "rb", "w", "wb", "a", "ab"})
+_DENIED_FILE_ATTRS = frozenset({
+    "fileno", "detach", "buffer", "raw",
+})
 
 
 class _CappedFile:
-    """File proxy that raises WorkspaceError if cumulative bytes exceed max_bytes.
+    """File proxy that enforces a cumulative bytes-written cap.
 
-    For append mode the starting position counts toward the cap so an existing
-    file that's already near-cap can't be silently grown past it.
+    The cap counts bytes passed to write/writelines, not the resulting
+    file size — a seek+overwrite pattern still consumes the cap. Methods
+    that would expose the underlying fd or buffered stream (fileno,
+    detach, buffer, raw) are blocked so user code cannot escape via
+    os.write or stream-stealing.
     """
 
     def __init__(self, fp, max_bytes: int, start_bytes: int = 0) -> None:
@@ -88,7 +94,15 @@ class _CappedFile:
         self._written += size
         return self._fp.write(data)
 
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
+
     def __getattr__(self, name):
+        if name in _DENIED_FILE_ATTRS:
+            raise WorkspaceError(
+                f"{name!r} is not exposed on capped files (would bypass write cap)"
+            )
         return getattr(self._fp, name)
 
     def __enter__(self):
