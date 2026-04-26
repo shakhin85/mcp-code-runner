@@ -39,11 +39,23 @@ def validate_skill_name(name: str) -> None:
 def write_skill_files(
     skills_dir: Path, name: str, code: str, description: str
 ) -> Path:
-    """Write a skill into <skills_dir>/<name>/. Returns the dir path."""
+    """Write a skill into <skills_dir>/<name>/. Returns the dir path.
+
+    Compiles `code` first so we don't persist a broken skill — the
+    caller (save_skill MCP tool) gets the SyntaxError back and can
+    surface it to the LLM author. The compile uses the eventual on-disk
+    filename so traceback line numbers are useful when debugging.
+    """
     validate_skill_name(name)
     target = Path(skills_dir) / name
+    script_path = target / "script.py"
+    try:
+        compile(code, str(script_path), "exec")
+    except SyntaxError as e:
+        raise ValueError(f"skill {name!r} has invalid Python syntax: {e}") from e
+
     target.mkdir(parents=True, exist_ok=True)
-    (target / "script.py").write_text(code, encoding="utf-8")
+    script_path.write_text(code, encoding="utf-8")
     md = f"---\nname: {name}\ndescription: {description.strip()}\n---\n"
     (target / "SKILL.md").write_text(md, encoding="utf-8")
     return target

@@ -53,3 +53,20 @@ def test_overwrite_existing_skill(tmp_path):
     write_skill_files(tmp_path, "demo", "def f(): return 2", "v2")
     ns = SkillsNamespace(SkillLoader(tmp_path).discover())
     assert ns.demo.f() == 2
+
+
+def test_write_skill_files_rejects_invalid_syntax(tmp_path):
+    with pytest.raises(ValueError, match="invalid Python syntax"):
+        write_skill_files(tmp_path, "bad", "def f(:\n    pass\n", "broken")
+    # Nothing should be on disk
+    assert not (tmp_path / "bad").exists()
+
+
+def test_write_skill_files_rejects_invalid_syntax_before_writing(tmp_path):
+    # Make sure we don't half-create the dir before failing.
+    write_skill_files(tmp_path, "good", "def f(): return 1", "good skill")
+    assert (tmp_path / "good").is_dir()
+    with pytest.raises(ValueError, match="invalid Python syntax"):
+        write_skill_files(tmp_path, "good", "this is not python!!!", "broken update")
+    # Existing skill is unchanged
+    assert (tmp_path / "good" / "script.py").read_text() == "def f(): return 1"
