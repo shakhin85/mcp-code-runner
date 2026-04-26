@@ -30,3 +30,19 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
 
 - **Workspace** — set `session_id` to enable `open()` inside sandbox; files live in `~/.cache/code-runner/workspace/<session_id>/`. Cleared on session eviction (TTL or LRU).
 - **Skills** — drop a directory into `~/.claude/code-runner-skills/<name>/` containing `script.py` + `SKILL.md`; functions become `skills.<name>.<fn>` in the sandbox. Use `save_skill` MCP tool to create one from inside `execute_code`.
+
+## Installing bundled skills
+
+Three reference skills ship under `skills_templates/`:
+- **csv_export** — dump rows to CSV in the session workspace
+- **snapshot_diff** — compare two row-lists, returns added/removed/changed
+- **schema_dump** — render column metadata as a fixed-width table
+
+Install them once into the user skills directory:
+
+```bash
+mkdir -p ~/.claude/code-runner-skills
+cp -r skills_templates/* ~/.claude/code-runner-skills/
+```
+
+Restart code-runner so `SkillLoader` picks them up. Use `save_skill` from inside `execute_code` to add new skills without restarting.
