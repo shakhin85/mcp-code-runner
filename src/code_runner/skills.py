@@ -26,6 +26,29 @@ class SkillSpec:
     path: Path
 
 
+_SKILL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+
+
+def validate_skill_name(name: str) -> None:
+    if not _SKILL_NAME_RE.match(name or ""):
+        raise ValueError(
+            f"invalid skill name {name!r}: must match {_SKILL_NAME_RE.pattern}"
+        )
+
+
+def write_skill_files(
+    skills_dir: Path, name: str, code: str, description: str
+) -> Path:
+    """Write a skill into <skills_dir>/<name>/. Returns the dir path."""
+    validate_skill_name(name)
+    target = Path(skills_dir) / name
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "script.py").write_text(code, encoding="utf-8")
+    md = f"---\nname: {name}\ndescription: {description.strip()}\n---\n"
+    (target / "SKILL.md").write_text(md, encoding="utf-8")
+    return target
+
+
 _FRONTMATTER_DESC_RE = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
 
 
@@ -170,6 +193,12 @@ class SkillsNamespace:
 
         Called by the executor before each run to point `open` at the
         sandbox-bound safe_open for the current session. Idempotent.
+
+        Trust note: skill code can also write into this dict at runtime
+        (e.g. `__builtins__["open"] = real_open`). The skills directory
+        is treated as trusted — bugs there can confuse later runs in the
+        same process. save_skill is the only path through which untrusted
+        (LLM-authored) code reaches this dict; review it carefully.
         """
         self._shared_builtins[name] = value
 
