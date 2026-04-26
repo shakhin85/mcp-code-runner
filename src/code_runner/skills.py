@@ -70,3 +70,101 @@ class SkillLoader:
                 path=child,
             )
         return out
+
+
+import builtins as _builtins
+from typing import Any
+
+
+class SkillProxy:
+    """Thin wrapper exposing a single skill's public callables.
+
+    Underscore-prefixed names (including imported modules used inside the
+    skill) are hidden so they don't pollute `dir(skills.foo)` or shadow
+    the framework namespace.
+    """
+
+    __slots__ = ("_name", "_callables")
+
+    def __init__(self, name: str, callables: dict[str, Any]) -> None:
+        self._name = name
+        self._callables = callables
+
+    def __getattr__(self, attr: str) -> Any:
+        if attr.startswith("_"):
+            raise AttributeError(attr)
+        if attr not in self._callables:
+            raise AttributeError(
+                f"skill {self._name!r} has no callable {attr!r}"
+            )
+        return self._callables[attr]
+
+    def __dir__(self):
+        return list(self._callables)
+
+    def __repr__(self):
+        fns = ", ".join(sorted(self._callables))
+        return f"<SkillProxy {self._name} fns=[{fns}]>"
+
+
+class _BrokenSkill:
+    """Surfaces a skill load error only when accessed, not at startup.
+
+    A single broken skill must not crash the executor — it just becomes
+    unreachable. Accessing any attribute raises with the original error.
+    """
+
+    __slots__ = ("_name", "_error")
+
+    def __init__(self, name: str, error: Exception) -> None:
+        self._name = name
+        self._error = error
+
+    def __getattr__(self, attr: str):
+        raise RuntimeError(
+            f"skill {self._name!r} failed to load: {self._error}"
+        )
+
+
+class SkillsNamespace:
+    """Attribute-accessible bag of skills for sandbox injection.
+
+    Each spec's source is exec'd ONCE at construction time in an isolated
+    module dict with full builtins (skills are trusted local code; we
+    don't run AST validation on them). Public callables become attributes
+    on the per-skill SkillProxy.
+    """
+
+    __slots__ = ("_proxies",)
+
+    def __init__(self, specs: dict[str, SkillSpec]) -> None:
+        self._proxies: dict[str, Any] = {}
+        for name, spec in specs.items():
+            module_ns: dict[str, Any] = {"__builtins__": _builtins.__dict__}
+            try:
+                code = compile(
+                    spec.source, str(spec.path / "script.py"), "exec"
+                )
+                exec(code, module_ns)
+            except Exception as e:
+                self._proxies[name] = _BrokenSkill(name, e)
+                continue
+            callables = {
+                k: v for k, v in module_ns.items()
+                if callable(v) and not k.startswith("_")
+            }
+            self._proxies[name] = SkillProxy(name, callables)
+
+    def __getattr__(self, attr: str) -> Any:
+        if attr.startswith("_"):
+            raise AttributeError(attr)
+        if attr not in self._proxies:
+            raise AttributeError(f"unknown skill: {attr}")
+        return self._proxies[attr]
+
+    def __dir__(self):
+        return list(self._proxies)
+
+    def __repr__(self):
+        names = ", ".join(sorted(self._proxies))
+        return f"<Skills [{names}]>"
