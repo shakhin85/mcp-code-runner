@@ -18,6 +18,7 @@ import time
 import traceback
 import types
 import uuid
+from pathlib import Path
 from typing import Any
 
 from mcp import ClientSession
@@ -26,6 +27,8 @@ from mcp.types import Tool
 from .config_reader import server_name_to_py
 from .metrics import MetricsRecorder
 from .sql_limit import inject_limit
+from .skills import SkillsNamespace
+from .workspace import WorkspaceManager, safe_open, WorkspaceError
 
 
 SAFE_BUILTINS = {
@@ -91,6 +94,8 @@ DEFAULT_AUTO_LIMIT = 500
 
 SESSION_TTL = 600.0  # seconds; idle sessions older than this are evicted
 MAX_SESSIONS = 20    # LRU cap to bound memory
+
+DEFAULT_WORKSPACE_ROOT = Path.home() / ".cache" / "code-runner" / "workspace"
 
 # Server-name prefix → sqlglot dialect for auto-LIMIT injection.
 # Exact-match "mssql" included; postgres variants matched by prefix.
@@ -376,9 +381,17 @@ class _ToolNamespace:
 
 
 class CodeExecutor:
-    def __init__(self, pool, recorder: "MetricsRecorder | None" = None):
+    def __init__(
+        self,
+        pool,
+        recorder: "MetricsRecorder | None" = None,
+        workspace: "WorkspaceManager | None" = None,
+        skills: "SkillsNamespace | None" = None,
+    ):
         self.pool = pool
         self.recorder = recorder
+        self.workspace = workspace if workspace is not None else WorkspaceManager(DEFAULT_WORKSPACE_ROOT)
+        self.skills = skills
         # Signals are process-global and can only be armed from the main
         # thread — serialize executions so two concurrent calls can't clobber
         # each other's SIGALRM state.
@@ -393,6 +406,7 @@ class CodeExecutor:
         ]
         for sid in expired:
             del self._sessions[sid]
+            self.workspace.cleanup_session(sid)
 
     def _evict_lru_if_over_capacity(self) -> None:
         while len(self._sessions) > MAX_SESSIONS:
@@ -401,6 +415,7 @@ class CodeExecutor:
                 key=lambda item: item[1].last_access,
             )[0]
             del self._sessions[lru_sid]
+            self.workspace.cleanup_session(lru_sid)
 
     def _get_or_create_session(self, session_id: str) -> _SessionState:
         self._evict_expired_sessions()
@@ -426,6 +441,21 @@ class CodeExecutor:
             **SAFE_MODULES,
         }
 
+        # Workspace-bound open(): when session_id is set, writes go into
+        # <workspace>/<session_id>/. When unset, the call raises so user code
+        # can't accidentally touch the host FS.
+        if session_id is not None:
+            wm = self.workspace
+            sid = session_id
+            def _user_open(path, mode="r", *, max_bytes=None):
+                kwargs = {} if max_bytes is None else {"max_bytes": max_bytes}
+                return safe_open(wm, sid, path, mode, **kwargs)
+            namespace["open"] = _user_open
+        else:
+            def _denied(*_a, **_kw):
+                raise WorkspaceError("open() requires session_id")
+            namespace["open"] = _denied
+
         for server_name, session in self.pool.sessions.items():
             py_name = server_name_to_py(server_name)
             tools = self.pool.tools.get(server_name, [])
@@ -435,6 +465,13 @@ class CodeExecutor:
                 stats=stats,
                 recorder=self.recorder,
             )
+
+        if self.skills is not None:
+            namespace["skills"] = self.skills
+            # Skill code calling open(...) goes through the same workspace-bound
+            # safe_open as the user's top-level code. The exec lock serializes
+            # runs so this per-call rebind is safe.
+            self.skills.bind("open", namespace["open"])
 
         # Snapshot framework-provided names so we can later diff to
         # extract only the user's own variables for persistence.

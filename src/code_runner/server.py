@@ -11,6 +11,7 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import Tool
@@ -20,12 +21,15 @@ from .executor import CodeExecutor
 from .metrics import recorder_from_env
 from .schema_gen import generate_server_overview, generate_stubs_for_server
 from .config_reader import server_name_to_py
+from .skills import SkillLoader, SkillSpec, SkillsNamespace, write_skill_files
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
 # Servers to skip (avoid self-reference and heavy servers)
 SKIP_SERVERS: set[str] = {"code-runner", "serena"}
+
+SKILLS_DIR = Path.home() / ".claude" / "code-runner-skills"
 
 
 @asynccontextmanager
@@ -46,10 +50,16 @@ async def lifespan(server: FastMCP):
 
     # Long-lived executor so persistent session namespaces survive across
     # execute_code calls within the same server process.
-    executor = CodeExecutor(pool, recorder=recorder)
+    loader = SkillLoader(SKILLS_DIR)
+    skills_ns = SkillsNamespace(loader.discover())
+    executor = CodeExecutor(pool, recorder=recorder, skills=skills_ns)
 
     try:
-        yield {"pool": pool, "executor": executor}
+        yield {
+            "pool": pool,
+            "executor": executor,
+            "skills_loader": loader,
+        }
     finally:
         await pool.shutdown()
 
@@ -95,6 +105,28 @@ def _search_tools_logic(
     return "\n\n".join(sections)
 
 
+def _format_skills_section(specs: dict[str, SkillSpec]) -> str:
+    """Render the '# === Skills ===' section for list_available_tools.
+
+    Returns an empty string when there are no skills so the caller
+    can unconditionally append.
+    """
+    if not specs:
+        return ""
+    lines = [
+        "",
+        "# === Skills ===",
+        "# (call as skills.<name>.<fn>(...))",
+    ]
+    for name in sorted(specs):
+        desc = (specs[name].description or "").strip()
+        line = f"# - skills.{name}"
+        if desc:
+            line += f": {desc}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 @mcp.tool()
 async def list_available_tools(ctx: Context) -> str:
     """
@@ -115,6 +147,10 @@ async def list_available_tools(ctx: Context) -> str:
         for name, err in pool.failed.items():
             lines.append(f"# {name}: {err}")
         overview += "\n".join(lines)
+
+    loader = ctx.request_context.lifespan_context.get("skills_loader")
+    if loader is not None:
+        overview += _format_skills_section(loader.discover())
 
     return overview
 
@@ -226,6 +262,35 @@ async def get_metrics(
         since=since, server=server, kind=kind, limit=limit
     )
     return json.dumps(events, ensure_ascii=False, default=str, indent=2)
+
+
+@mcp.tool()
+async def save_skill(name: str, code: str, description: str, ctx: Context) -> str:
+    """
+    Save a skill to ~/.claude/code-runner-skills/<name>/.
+
+    A skill is a Python file plus a description. Once saved, its public
+    functions are immediately available inside execute_code as
+    skills.<name>.<function_name>(...). Skills are local and trusted —
+    they run with full Python builtins, can import packages from this
+    server's venv, and are persistent across restarts.
+
+    Overwriting an existing skill of the same name is allowed.
+
+    Args:
+        name: lowercase alphanumeric + underscore, max 40 chars,
+            must start with a letter (matches ^[a-z][a-z0-9_]{0,39}$).
+        code: full Python source for script.py.
+        description: one-sentence summary used in list_available_tools.
+    """
+    target = write_skill_files(SKILLS_DIR, name, code, description)
+
+    loader: SkillLoader = ctx.request_context.lifespan_context["skills_loader"]
+    new_ns = SkillsNamespace(loader.discover())
+    executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
+    executor.skills = new_ns
+
+    return f"Saved skill {name!r} to {target}"
 
 
 def main():
