@@ -24,6 +24,7 @@ from typing import Any
 from mcp import ClientSession
 from mcp.types import Tool
 
+from . import prelude as _prelude
 from .config_reader import server_name_to_py
 from .metrics import MetricsRecorder
 from .sql_limit import inject_limit
@@ -54,6 +55,8 @@ SAFE_MODULES = {
     "decimal": decimal,
     "math": math,
     "collections": collections,
+    "time": time,
+    "json": json,
 }
 
 # Namespace for parsing Python-repr responses from MCP servers (e.g. postgres
@@ -472,6 +475,9 @@ class CodeExecutor:
             # safe_open as the user's top-level code. The exec lock serializes
             # runs so this per-call rebind is safe.
             self.skills.bind("open", namespace["open"])
+            # Short aliases for hot skill functions (fg_query, md_table, probe, ...).
+            # See prelude.ALIASES for the full list. Missing skills are skipped.
+            namespace.update(_prelude.build(self.skills))
 
         # Snapshot framework-provided names so we can later diff to
         # extract only the user's own variables for persistence.
