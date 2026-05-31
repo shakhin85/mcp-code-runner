@@ -94,6 +94,12 @@ def _validate_repr_ast(tree: ast.AST) -> None:
 
 DEFAULT_MAX_OUTPUT_BYTES = 20000
 DEFAULT_AUTO_LIMIT = 500
+# Per-single-tool-call byte cap. auto_limit caps ROWS; this caps BYTES, so a
+# `SELECT * LIMIT 500` over wide/jsonb columns can't still materialize MBs.
+# When a single tool response exceeds this, it is returned as a TRUNCATED STRING
+# (not parsed into objects) with a marker, forcing the model to narrow the query.
+# Pass 0 to disable.
+DEFAULT_RAW_CAP = 262144  # 256 KB
 
 SESSION_TTL = 600.0  # seconds; idle sessions older than this are evicted
 MAX_SESSIONS = 20    # LRU cap to bound memory
@@ -285,6 +291,7 @@ class _ToolNamespace:
         auto_limit: int = 0,
         stats: dict[str, int] | None = None,
         recorder: "MetricsRecorder | None" = None,
+        raw_cap: int = 0,
     ):
         self._server_name = server_name
         self._session = session
@@ -293,6 +300,7 @@ class _ToolNamespace:
         self._sql_dialect = _dialect_for_server(server_name) if auto_limit > 0 else None
         self._stats = stats
         self._recorder = recorder
+        self._raw_cap = raw_cap
 
         for tool in tools:
             py_attr = tool.name.replace("-", "_")
@@ -317,6 +325,7 @@ class _ToolNamespace:
     def _make_wrapper(self, tool_name: str):
         session = self._session
         server = self._server_name
+        raw_cap = self._raw_cap
 
         async def wrapper(**kwargs):
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
@@ -336,6 +345,17 @@ class _ToolNamespace:
                         texts.append(json.dumps(content.data, ensure_ascii=False))
                 combined = "\n".join(texts)
                 out_bytes = len(combined.encode("utf-8"))
+                # Byte cap at the SOURCE: a single tool response over raw_cap is
+                # returned as a truncated STRING (not parsed). out_bytes still
+                # records the true raw size for metrics (see finally block).
+                if raw_cap > 0 and out_bytes > raw_cap:
+                    kept = combined.encode("utf-8")[:raw_cap].decode("utf-8", errors="ignore")
+                    return (
+                        kept
+                        + f"\n\n...[RAW-CAP: {server}.{tool_name} returned {out_bytes} bytes, "
+                        f"kept first {raw_cap}. Returned as a TRUNCATED STRING (not parsed into "
+                        "objects) — narrow columns, aggregate, or add LIMIT, then re-run.]"
+                    )
                 stripped = combined.strip()
                 # Try JSON first (fast path, most MCP servers), then fall back to
                 # the safe Python-repr parser for servers like postgres that return
@@ -434,6 +454,7 @@ class CodeExecutor:
         session_id: str | None = None,
         auto_limit: int = 0,
         stats: dict[str, int] | None = None,
+        raw_cap: int = 0,
     ) -> tuple[dict[str, Any], set[str]]:
         # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
         safe_builtins = {name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)}
@@ -467,6 +488,7 @@ class CodeExecutor:
                 auto_limit=auto_limit,
                 stats=stats,
                 recorder=self.recorder,
+                raw_cap=raw_cap,
             )
 
         if self.skills is not None:
@@ -499,6 +521,7 @@ class CodeExecutor:
             k: v for k, v in namespace.items()
             if k not in framework_names
             and k != "print"
+            and k != "print_rows"
             and not (k.startswith("__") and k.endswith("__"))
         }
 
@@ -509,13 +532,14 @@ class CodeExecutor:
         max_output_bytes: int = DEFAULT_MAX_OUTPUT_BYTES,
         session_id: str | None = None,
         auto_limit: int = DEFAULT_AUTO_LIMIT,
+        raw_cap: int = DEFAULT_RAW_CAP,
     ) -> dict[str, Any]:
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
         # MCP stdio case.
         async with self._exec_lock:
             return await self._execute_locked(
-                code, timeout, max_output_bytes, session_id, auto_limit
+                code, timeout, max_output_bytes, session_id, auto_limit, raw_cap
             )
 
     async def _execute_locked(
@@ -525,6 +549,7 @@ class CodeExecutor:
         max_output_bytes: int,
         session_id: str | None,
         auto_limit: int,
+        raw_cap: int = DEFAULT_RAW_CAP,
     ) -> dict[str, Any]:
         start_exec = time.monotonic()
         stats: dict[str, int] = {"tool_calls": 0, "auto_limit_hits": 0}
@@ -561,7 +586,7 @@ class CodeExecutor:
         code = _transform_last_expr(code)
 
         namespace, framework_names = self._build_namespace(
-            session_id, auto_limit, stats
+            session_id, auto_limit, stats, raw_cap
         )
 
         output_lines: list[str] = []
@@ -570,6 +595,34 @@ class CodeExecutor:
             output_lines.append(sep.join(str(a) for a in args) + end)
 
         namespace["print"] = captured_print
+
+        def _print_rows(obj, n: int = 10):
+            """Compact preview of tabular results: shape + head(n) + tail(3).
+
+            Use instead of `print(rows)` when a query may return many/wide rows:
+            it prints row/column shape and a sample, not the full dump.
+            """
+            rows = obj
+            if isinstance(obj, dict):
+                rows = obj.get("rows", obj.get("data", obj))
+            if not isinstance(rows, list):
+                captured_print(obj)
+                return
+            total = len(rows)
+            cols = list(rows[0].keys()) if rows and isinstance(rows[0], dict) else None
+            header = f"[{total} rows" + (f" × {len(cols)} cols: {cols}]" if cols else "]")
+            captured_print(header)
+            for r in rows[:n]:
+                captured_print(r)
+            if total > n + 3:
+                captured_print(f"... ({total - n - 3} more rows) ...")
+                for r in rows[-3:]:
+                    captured_print(r)
+            elif total > n:
+                for r in rows[n:]:
+                    captured_print(r)
+
+        namespace["print_rows"] = _print_rows
         # Clear any leftover auto-display sentinel from a previous exec in the
         # same session so its presence truly reflects the current run.
         namespace.pop(_RESULT_SENTINEL, None)

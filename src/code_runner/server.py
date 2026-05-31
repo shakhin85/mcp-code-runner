@@ -176,6 +176,7 @@ async def execute_code(
     max_output_bytes: int = 20000,
     session_id: str | None = None,
     auto_limit: int = 500,
+    raw_cap: int = 262144,
 ) -> str:
     """
     Execute Python code with access to all connected MCP tools.
@@ -206,6 +207,13 @@ async def execute_code(
             their own LIMIT/TOP. INSERT/UPDATE/DELETE/DDL are never rewritten.
             Pass 0 to disable entirely, or a larger value when you really
             need more rows (combine with max_output_bytes).
+        raw_cap: Per-single-tool-call byte cap (default 262144 ≈ 256KB).
+            auto_limit caps ROWS; this caps BYTES, so a `SELECT * LIMIT 500`
+            over wide/jsonb columns can't still pull megabytes. When one tool
+            response exceeds raw_cap it is returned as a TRUNCATED STRING (not
+            parsed into dicts/lists) with a marker — narrow columns or aggregate
+            and re-run. Use print_rows(result) for a compact head/tail preview
+            instead of print(result). Pass 0 to disable.
     """
     executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
 
@@ -215,6 +223,7 @@ async def execute_code(
         max_output_bytes=max_output_bytes,
         session_id=session_id,
         auto_limit=auto_limit,
+        raw_cap=raw_cap,
     )
 
     lines = []
