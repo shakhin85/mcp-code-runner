@@ -9,6 +9,7 @@ Exposes three tools to Claude:
 
 import json
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,8 +27,14 @@ from .skills import SkillLoader, SkillSpec, SkillsNamespace, write_skill_files
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
-# Servers to skip (avoid self-reference and heavy servers)
-SKIP_SERVERS: set[str] = {"code-runner", "serena"}
+# Servers to skip: self-reference + heavy stdio servers that don't bridge cleanly
+# (e.g. 1С servers — their subprocess dies with ClosedResourceError under the pool).
+# Extend via CODE_RUNNER_SKIP_SERVERS env (comma-separated server names).
+SKIP_SERVERS: set[str] = {"code-runner", "serena"} | {
+    s.strip()
+    for s in os.environ.get("CODE_RUNNER_SKIP_SERVERS", "").split(",")
+    if s.strip()
+}
 
 SKILLS_DIR = Path.home() / ".claude" / "code-runner-skills"
 
