@@ -5,15 +5,26 @@ Includes AST validation, safe builtins, and auto-display of last expression.
 
 import ast
 import asyncio
+import base64
+import bisect
 import builtins
 import collections
+import dataclasses
 import datetime
 import decimal
+import functools
+import hashlib
+import heapq
+import itertools
 import json
 import math
+import random
 import re
 import signal
+import statistics
+import string
 import sys
+import textwrap
 import time
 import traceback
 import types
@@ -57,6 +68,19 @@ SAFE_MODULES = {
     "collections": collections,
     "time": time,
     "json": json,
+    # Pure compute/data stdlib — no filesystem, process, or network reach.
+    "itertools": itertools,
+    "functools": functools,
+    "statistics": statistics,
+    "random": random,
+    "string": string,
+    "textwrap": textwrap,
+    "dataclasses": dataclasses,
+    "uuid": uuid,
+    "hashlib": hashlib,
+    "base64": base64,
+    "heapq": heapq,
+    "bisect": bisect,
 }
 
 # Namespace for parsing Python-repr responses from MCP servers (e.g. postgres
@@ -248,6 +272,67 @@ def validate_code(code: str) -> None:
 
 _RESULT_SENTINEL = "__cr_result__"
 
+# The filename passed to compile() for user code. Frames with this filename are
+# the only ones worth showing — everything else (executor, asyncio internals) is
+# harness noise that bloats the error and obscures the real line.
+_USER_FILENAME = "<user>"
+
+
+def _format_user_traceback(exc: BaseException) -> str:
+    """Format an exception showing only the user-code frames.
+
+    A raw ``traceback.format_exc()`` leaks the executor's own frames
+    (``_execute_locked`` → ``asyncio.wait_for`` → ``return await fut``) before
+    reaching ``<user>``. Those frames are pure noise: they never point at the
+    user's bug and cost tokens on every error. We keep only ``<user>`` frames so
+    the message reads as the exception line plus the relevant source lines.
+
+    Falls back to the full traceback if no user frame is present (e.g. an error
+    raised entirely inside the harness), so we never hide a genuine internal bug.
+    """
+    header = f"{type(exc).__name__}: {exc}"
+    tb = exc.__traceback__
+    if tb is None:
+        return header
+    user_frames = [fs for fs in traceback.extract_tb(tb) if fs.filename == _USER_FILENAME]
+    if not user_frames:
+        return f"{header}\n{traceback.format_exc()}"
+    lines = ["Traceback (most recent call last):\n"]
+    lines.extend(traceback.format_list(user_frames))
+    return "".join(lines) + header
+
+
+# Substrings of the exact TypeError messages CPython raises when code indexes or
+# iterates a str/bytes as if it were a dict or list of dicts — the signature of
+# "I assumed a tool result was an object but it came back as a string".
+_SUBSCRIPT_ERROR_MARKERS = (
+    "string indices must be integers",
+    "'str' object is not subscriptable",
+    "byte indices must be integers",
+    "'bytes' object is not subscriptable",
+)
+
+_STR_RESULT_HINT = (
+    "\n\nHINT: a tool result this run was returned as a STRING, not parsed into "
+    "dict/list — either it exceeded raw_cap (truncated) or the server returned "
+    "non-JSON. Indexing it like an object raises this error. Check `type(result)` "
+    "and the RAW-CAP note in the result; narrow columns / add LIMIT, then re-run."
+)
+
+
+def _str_result_hint(exc: BaseException, stats: dict[str, int]) -> str:
+    """Append a footgun hint iff a subscript error coincides with a str tool result.
+
+    Fires only when both signals are present in the same run, so it never adds
+    noise to an unrelated TypeError.
+    """
+    if stats.get("str_results", 0) <= 0:
+        return ""
+    msg = str(exc)
+    if any(marker in msg for marker in _SUBSCRIPT_ERROR_MARKERS):
+        return _STR_RESULT_HINT
+    return ""
+
 
 def _transform_last_expr(code: str) -> str:
     """If last statement is a bare expression, assign it to a sentinel for auto-display.
@@ -349,6 +434,8 @@ class _ToolNamespace:
                 # returned as a truncated STRING (not parsed). out_bytes still
                 # records the true raw size for metrics (see finally block).
                 if raw_cap > 0 and out_bytes > raw_cap:
+                    if self._stats is not None:
+                        self._stats["str_results"] += 1
                     kept = combined.encode("utf-8")[:raw_cap].decode("utf-8", errors="ignore")
                     return (
                         kept
@@ -369,6 +456,8 @@ class _ToolNamespace:
                         return _parse_python_repr(stripped)
                     except ValueError:
                         pass
+                if self._stats is not None:
+                    self._stats["str_results"] += 1
                 return combined
             except BaseException as e:
                 success = False
@@ -552,7 +641,7 @@ class CodeExecutor:
         raw_cap: int = DEFAULT_RAW_CAP,
     ) -> dict[str, Any]:
         start_exec = time.monotonic()
-        stats: dict[str, int] = {"tool_calls": 0, "auto_limit_hits": 0}
+        stats: dict[str, int] = {"tool_calls": 0, "auto_limit_hits": 0, "str_results": 0}
 
         def finalize(success: bool, output: str, error: str | None) -> dict[str, Any]:
             truncated = _truncate_output(output, max_output_bytes)
@@ -684,7 +773,7 @@ class CodeExecutor:
             return finalize(
                 False,
                 "".join(output_lines),
-                f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+                _format_user_traceback(e) + _str_result_hint(e, stats),
             )
         finally:
             if alarm_armed:
