@@ -25,6 +25,10 @@ class MCPClientPool:
         self.sessions: dict[str, ClientSession] = {}
         self.tools: dict[str, list[Tool]] = {}
         self.failed: dict[str, str] = {}
+        # Keep configs so a dead session (e.g. HTTP server restarted and the
+        # cached Mcp-Session-Id got invalidated) can be re-established on demand.
+        self.configs: dict[str, ServerConfig] = {}
+        self._reconnect_locks: dict[str, asyncio.Lock] = {}
 
     async def startup(self, skip_servers: set[str] | None = None) -> None:
         """Connect to all configured MCP servers in parallel."""
@@ -50,6 +54,7 @@ class MCPClientPool:
             logger.warning(f"Failed to connect to '{name}': {e}")
 
     async def _connect(self, name: str, cfg: ServerConfig) -> None:
+        self.configs[name] = cfg
         if cfg.transport == "http":
             await self._connect_http(name, cfg)
         else:
@@ -111,11 +116,53 @@ class MCPClientPool:
             await stack.aclose()
             raise
 
+    # Substrings that mark a dead transport/session (vs. a legit tool error)
+    # worth a single reconnect + retry.
+    _RECONNECTABLE = (
+        "session terminated",
+        "session not found",
+        "closedresource",
+        "connection",
+        "broken pipe",
+        "peer closed",
+        "http 404",
+    )
+
+    def _is_reconnectable(self, exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return any(marker in msg for marker in self._RECONNECTABLE)
+
+    async def _reconnect(self, server_name: str) -> None:
+        """Re-establish a single server's session (e.g. after it restarted).
+
+        Drops the stale session and connects fresh. The old per-server exit
+        stack is left for shutdown() to close — releasing it here would risk
+        anyio's "cancel scope in a different task" since it was entered under a
+        different startup task."""
+        cfg = self.configs.get(server_name)
+        if cfg is None:
+            raise RuntimeError(f"No stored config for '{server_name}' to reconnect")
+        lock = self._reconnect_locks.setdefault(server_name, asyncio.Lock())
+        async with lock:
+            await self._connect(server_name, cfg)
+
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict):
         session = self.sessions.get(server_name)
         if session is None:
             raise RuntimeError(f"Server '{server_name}' is not connected")
-        return await session.call_tool(tool_name, arguments)
+        try:
+            return await session.call_tool(tool_name, arguments)
+        except Exception as e:
+            if not self._is_reconnectable(e):
+                raise
+            logger.warning(
+                f"'{server_name}' session dead ({e}); reconnecting and retrying once"
+            )
+            await self._reconnect(server_name)
+            session = self.sessions.get(server_name)
+            if session is None:
+                raise RuntimeError(f"Reconnect to '{server_name}' failed") from e
+            return await session.call_tool(tool_name, arguments)
 
     async def shutdown(self) -> None:
         await self._exit_stack.aclose()

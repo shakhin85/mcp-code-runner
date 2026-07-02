@@ -7,3 +7,6 @@ models/
 .env*
 !.env.example
 .mcp.json
+
+# codegraph local index
+.codegraph/
