@@ -114,6 +114,36 @@ class TestSandboxNamespace:
         assert result["success"] is True
         assert "42" in result["output"]
 
+    def test_new_safe_builtins_available(self, executor):
+        code = (
+            "print(next(iter([7])), divmod(7, 2), hex(255), "
+            "list(bytes([65])), callable(len), hash(3) == hash(3))"
+        )
+        result = asyncio.run(executor.execute(code))
+        assert result["success"] is True
+        assert "7 (3, 1) 0xff [65] True True" in result["output"]
+
+    def test_new_exceptions_catchable(self, executor):
+        # `except NameError` must no longer self-raise "name not defined"
+        code = (
+            "try:\n    raise StopIteration\n"
+            "except StopIteration:\n    print('caught')"
+        )
+        result = asyncio.run(executor.execute(code))
+        assert result["success"] is True
+        assert "caught" in result["output"]
+
+    def test_getattr_stays_blocked(self, executor):
+        # SECURITY: getattr bypasses the AST dunder guard via runtime strings,
+        # so it must remain absent from the sandbox namespace.
+        result = asyncio.run(executor.execute("getattr(1, 'real')"))
+        assert result["success"] is False
+
+    def test_reflection_builtins_stay_blocked(self, executor):
+        for name in ("getattr", "setattr", "hasattr", "vars", "globals", "locals", "dir"):
+            result = asyncio.run(executor.execute(f"{name}"))
+            assert result["success"] is False, f"{name} must stay blocked"
+
     def test_datetime_available(self, executor):
         result = asyncio.run(executor.execute(
             "d = datetime.date(2026, 4, 10)\nprint(d.isoformat())"

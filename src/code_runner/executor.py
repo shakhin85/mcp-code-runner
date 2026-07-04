@@ -48,8 +48,17 @@ SAFE_BUILTINS = {
     "sorted", "reversed", "list", "dict", "set", "tuple", "str",
     "int", "float", "bool", "isinstance", "type", "repr",
     "min", "max", "sum", "abs", "round", "any", "all",
+    # iterators / numeric / data — pure, no reflection or FS/process reach
+    "next", "iter", "divmod", "pow", "hex", "bin", "oct", "chr", "ord",
+    "complex", "frozenset", "bytes", "bytearray", "slice", "hash",
+    "callable", "format",
     "ValueError", "TypeError", "KeyError",
     "IndexError", "RuntimeError", "Exception",
+    "NameError", "AttributeError", "StopIteration",
+    "ZeroDivisionError", "AssertionError", "NotImplementedError",
+    # DELIBERATELY EXCLUDED (sandbox escape via runtime-string dunder access,
+    # which bypasses the AST dunder guard): getattr, hasattr, setattr, delattr,
+    # vars, globals, locals, dir, eval, exec, compile, open, __import__, input.
 }
 
 # Safe asyncio subset — no subprocess access
