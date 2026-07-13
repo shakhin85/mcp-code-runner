@@ -170,3 +170,61 @@ def test_safe_open_blocks_fd_exposing_attrs(wm):
         for attr in ("fileno", "detach", "buffer", "raw"):
             with pytest.raises(WorkspaceError, match="bypass"):
                 getattr(f, attr)
+
+
+# --- read-only roots: reading project files without copying them in ---
+
+@pytest.fixture
+def wm_ro(tmp_path):
+    proj = tmp_path / "projects"
+    (proj / "app").mkdir(parents=True)
+    (proj / "app" / "letter.html").write_text("<b>Привет</b>", encoding="utf-8")
+    (proj / "app" / ".env").write_text("SECRET=1", encoding="utf-8")
+    (tmp_path / "outside.txt").write_text("nope", encoding="utf-8")
+    return WorkspaceManager(root=tmp_path / "ws", read_roots=(proj,)), proj
+
+
+def test_reads_absolute_path_under_read_root(wm_ro):
+    wm, proj = wm_ro
+    with safe_open(wm, "s1", str(proj / "app" / "letter.html")) as f:
+        assert f.read() == "<b>Привет</b>"
+
+
+def test_rejects_absolute_path_outside_read_roots(wm_ro, tmp_path):
+    wm, _ = wm_ro
+    with pytest.raises(WorkspaceError, match="outside the read-only roots"):
+        safe_open(wm, "s1", str(tmp_path / "outside.txt"))
+
+
+def test_rejects_secret_file_inside_read_root(wm_ro):
+    wm, proj = wm_ro
+    with pytest.raises(WorkspaceError, match="secret-looking"):
+        safe_open(wm, "s1", str(proj / "app" / ".env"))
+
+
+def test_rejects_absolute_write(wm_ro, proj_path=None):
+    wm, proj = wm_ro
+    with pytest.raises(WorkspaceError, match="absolute path is not allowed"):
+        safe_open(wm, "s1", str(proj / "app" / "new.txt"), "w")
+
+
+def test_text_mode_defaults_to_utf8(wm_ro, monkeypatch):
+    wm, _ = wm_ro
+    with safe_open(wm, "s1", "ru.txt", "w") as f:
+        f.write("Выручка партнёров — 2 000 ₽")
+    with safe_open(wm, "s1", "ru.txt") as f:
+        assert f.read() == "Выручка партнёров — 2 000 ₽"
+
+
+def test_encoding_kwarg_accepted(wm_ro):
+    wm, _ = wm_ro
+    with safe_open(wm, "s1", "cp.txt", "w", encoding="cp1251") as f:
+        f.write("Привет")
+    with safe_open(wm, "s1", "cp.txt", encoding="cp1251") as f:
+        assert f.read() == "Привет"
+
+
+def test_encoding_rejected_in_binary_mode(wm_ro):
+    wm, _ = wm_ro
+    with pytest.raises(WorkspaceError, match="binary"):
+        safe_open(wm, "s1", "b.bin", "wb", encoding="utf-8")

@@ -184,6 +184,46 @@ def _truncate_output(output: str, max_bytes: int) -> str:
     return kept + footer
 
 
+def _fmt_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f}KB"
+    return f"{n / (1024 * 1024):.1f}MB"
+
+
+def _append_cost_footer(output: str, stats: dict[str, int], elapsed_ms: float) -> str:
+    """Append a one-line cost receipt when the run actually called MCP tools.
+
+    The whole point of running code here is that raw tool output stays in the
+    sandbox and only the summary reaches the model's context. That saving was
+    invisible — so was its absence. This line makes both visible: a single call
+    whose raw bytes land in context unchanged is a run that should have been a
+    direct MCP call, and the footer says so instead of quietly looking useful.
+    """
+    calls = stats.get("tool_calls", 0)
+    if calls <= 0:
+        return output
+
+    raw = stats.get("raw_tool_bytes", 0)
+    sent = len(output.encode("utf-8")) if output else 0
+    line = (
+        f"[cr] {calls} tool call{'s' if calls != 1 else ''} · "
+        f"{_fmt_bytes(raw)} raw → {_fmt_bytes(sent)} in context"
+    )
+    if raw > 0:
+        saved = 100 * (1 - min(sent, raw) / raw)
+        line += f" ({saved:.0f}% saved)"
+    line += f" · {elapsed_ms:.0f}ms"
+
+    if calls == 1 and raw > 0 and sent >= raw * 0.9:
+        line += (
+            "\n[cr] no aggregation happened here — one tool call, output passed through. "
+            "A direct MCP call would have cost the same and been simpler."
+        )
+    return f"{output}\n{line}" if output else line
+
+
 class _SandboxTimeout(BaseException):
     """Raised by SIGALRM handler when user code exceeds its hard timeout.
 
@@ -269,8 +309,16 @@ def validate_code(code: str) -> None:
                 names = [alias.name for alias in node.names]
             else:
                 names = [node.module or ""]
+            preloaded = {"asyncio", *SAFE_MODULES}
+            already = [n for n in names if n.split(".")[0] in preloaded]
+            hint = ""
+            if already:
+                hint = (
+                    f" — {', '.join(already)} уже preloaded в sandbox: "
+                    f"убери import и используй напрямую (top-level await поддержан)"
+                )
             raise ValueError(
-                f"import statements are not allowed: {', '.join(names)}"
+                f"import statements are not allowed: {', '.join(names)}{hint}"
             )
 
         if isinstance(node, ast.Attribute) and node.attr.startswith("__") and node.attr.endswith("__"):
@@ -475,6 +523,9 @@ class _ToolNamespace:
             finally:
                 if self._stats is not None:
                     self._stats["tool_calls"] += 1
+                    self._stats["raw_tool_bytes"] = (
+                        self._stats.get("raw_tool_bytes", 0) + out_bytes
+                    )
                 if self._recorder is not None:
                     try:
                         self._recorder.record({
@@ -569,8 +620,15 @@ class CodeExecutor:
         if session_id is not None:
             wm = self.workspace
             sid = session_id
-            def _user_open(path, mode="r", *, max_bytes=None):
-                kwargs = {} if max_bytes is None else {"max_bytes": max_bytes}
+            def _user_open(
+                path, mode="r", *,
+                max_bytes=None, encoding=None, errors=None, newline=None,
+            ):
+                kwargs: dict[str, Any] = {
+                    "encoding": encoding, "errors": errors, "newline": newline,
+                }
+                if max_bytes is not None:
+                    kwargs["max_bytes"] = max_bytes
                 return safe_open(wm, sid, path, mode, **kwargs)
             namespace["open"] = _user_open
         else:
@@ -650,10 +708,15 @@ class CodeExecutor:
         raw_cap: int = DEFAULT_RAW_CAP,
     ) -> dict[str, Any]:
         start_exec = time.monotonic()
-        stats: dict[str, int] = {"tool_calls": 0, "auto_limit_hits": 0, "str_results": 0}
+        stats: dict[str, int] = {
+            "tool_calls": 0, "auto_limit_hits": 0, "str_results": 0, "raw_tool_bytes": 0,
+        }
 
         def finalize(success: bool, output: str, error: str | None) -> dict[str, Any]:
             truncated = _truncate_output(output, max_output_bytes)
+            truncated = _append_cost_footer(
+                truncated, stats, elapsed_ms=(time.monotonic() - start_exec) * 1000
+            )
             result = {"success": success, "output": truncated, "error": error}
             if self.recorder is not None:
                 try:

@@ -729,3 +729,34 @@ class TestSkillsIntegration:
         assert result["success"] is True, result["error"]
         assert "k" in result["output"] and "1" in result["output"]
         assert (tmp_path / "sb" / "rebound.csv").exists()
+
+
+# --- cost receipt: the saving (or its absence) must be visible ---
+
+from code_runner.executor import _append_cost_footer
+
+
+def test_cost_footer_absent_without_tool_calls():
+    stats = {"tool_calls": 0, "raw_tool_bytes": 0}
+    assert _append_cost_footer("hello", stats, elapsed_ms=5) == "hello"
+
+
+def test_cost_footer_reports_saving():
+    stats = {"tool_calls": 3, "raw_tool_bytes": 100_000}
+    out = _append_cost_footer("summary", stats, elapsed_ms=120)
+    assert "3 tool calls" in out
+    assert "97.7KB raw" in out
+    assert "% saved)" in out
+
+
+def test_cost_footer_flags_pointless_passthrough():
+    raw = "x" * 1000
+    stats = {"tool_calls": 1, "raw_tool_bytes": 1000}
+    out = _append_cost_footer(raw, stats, elapsed_ms=10)
+    assert "no aggregation happened here" in out
+
+
+def test_cost_footer_silent_when_aggregation_happened():
+    stats = {"tool_calls": 1, "raw_tool_bytes": 50_000}
+    out = _append_cost_footer("42 rows", stats, elapsed_ms=10)
+    assert "no aggregation happened here" not in out
