@@ -172,8 +172,23 @@ class TestSandboxNamespace:
 
     def test_type_builtin_available(self, executor):
         result = asyncio.run(executor.execute("print(type(42).__name__)"))
-        # __name__ dunder blocked — use without dunder
-        assert result["success"] is False
+        assert result["success"] is True
+        assert "int" in result["output"]
+
+    def test_exception_name_is_printable(self, executor):
+        # Naming the exception is the ordinary way to report a failure; the
+        # dunder guard used to reject it and force a rewrite.
+        result = asyncio.run(executor.execute(
+            "try:\n    1 / 0\nexcept Exception as e:\n    print(type(e).__name__)"
+        ))
+        assert result["success"] is True
+        assert "ZeroDivisionError" in result["output"]
+
+    def test_escape_dunders_still_blocked(self, executor):
+        for expr in ("x = ''.__class__", "x = print.__globals__", "x = ().__reduce__"):
+            result = asyncio.run(executor.execute(expr))
+            assert result["success"] is False, expr
+            assert "__" in result["error"]
 
     def test_type_builtin_simple(self, executor):
         result = asyncio.run(executor.execute("t = type(42)\nprint(t is int)"))

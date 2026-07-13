@@ -69,6 +69,13 @@ _SAFE_ASYNCIO.wait_for = asyncio.wait_for
 
 # Pre-imported stdlib modules available in sandbox without `import` statements.
 # Each is filesystem/process-free and safe for arbitrary LLM-generated code.
+# Dunder access is blocked because attributes like __class__, __globals__ and
+# __subclasses__ walk out of the sandbox. __name__ does not: it yields a plain
+# string. Blocking it only forced `print(type(e).__name__)` — the ordinary way
+# to name an exception — to be rewritten, which is friction with no security to
+# show for it.
+ALLOWED_DUNDER_ATTRS = frozenset({"__name__"})
+
 SAFE_MODULES = {
     "re": re,
     "datetime": datetime,
@@ -321,7 +328,12 @@ def validate_code(code: str) -> None:
                 f"import statements are not allowed: {', '.join(names)}{hint}"
             )
 
-        if isinstance(node, ast.Attribute) and node.attr.startswith("__") and node.attr.endswith("__"):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr.startswith("__")
+            and node.attr.endswith("__")
+            and node.attr not in ALLOWED_DUNDER_ATTRS
+        ):
             raise ValueError(
                 f"dunder attribute access is not allowed: {node.attr}"
             )

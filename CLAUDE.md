@@ -52,8 +52,10 @@ sandbox stops being a matter of faith.
 ## Security
 
 - `.mcp.json` is gitignored — local file holds project-only MCP server config including API keys
-- Sandbox forbids `import`, dunder access, subprocess, writes outside the session workspace,
-  and reads outside the read-only roots (or of secret-looking files inside them)
+- Sandbox forbids `import`, dunder access (except `__name__`, which yields a plain string
+  and opens no escape — `print(type(e).__name__)` is allowed), subprocess, writes outside
+  the session workspace, and reads outside the read-only roots (or of secret-looking files
+  inside them)
 - Skills run with full builtins (trusted local code), user code in `execute_code` does not
 
 ## Opt-in features
