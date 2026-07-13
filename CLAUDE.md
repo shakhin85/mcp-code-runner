@@ -11,19 +11,49 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
 - `schema_gen.py` — JSON-schema → Python stub strings for `search_tools`.
 - `sql_limit.py` — sqlglot-based auto-LIMIT/TOP injection for bare SELECTs.
 - `metrics.py` — JSONL recorder for `tool_call` and `execute_code` events.
-- `workspace.py` — per-session filesystem at `~/.cache/code-runner/workspace/<session_id>/`, exposed via injected `open()`.
+- `workspace.py` — injected `open()`: writes confined to `~/.cache/code-runner/workspace/<session_id>/` (relative paths), reads may also reach absolute paths under `CODE_RUNNER_READ_ROOTS` minus a secret deny-list. Text modes default to UTF-8.
 - `skills.py` — discovers `~/.claude/code-runner-skills/<name>/`, exposes `skills.<name>.<fn>` proxy.
+
+## Files and encoding
+
+The sandbox exists to keep raw tool output out of the model's context, not to make
+file access awkward. So:
+
+- **Read** — an absolute path is fine as long as it resolves under a read-only root
+  (`CODE_RUNNER_READ_ROOTS`, colon-separated; default `~/projects`) and its filename
+  is not on the secret deny-list (`.env*`, `*.pem`, `.mcp.json`, `*secret*`, `*token*`, …).
+  No need to copy project files into the workspace first.
+- **Write** — relative paths only, landing in the session workspace. `session_id` is
+  required. Absolute-path writes are always refused; copy the file out with Bash.
+- **Encoding** — text modes default to UTF-8 rather than the host locale, and accept
+  `encoding` / `errors` / `newline`. The data here is routinely Russian; locale-dependent
+  decoding produced mojibake and UnicodeDecodeError.
+
+## Cost receipt
+
+Any run that calls MCP tools appends one line:
+
+```
+[cr] 3 tool calls · 120.4KB raw → 1.2KB in context (99% saved) · 840ms
+```
+
+A single call whose output passes through unaggregated also prints
+`no aggregation happened here` — that run should have been a direct MCP call.
+The receipt makes both the saving and its absence visible, so routing through the
+sandbox stops being a matter of faith.
 
 ## Dev
 
-- `uv run pytest` — full test suite (198 tests)
+- `uv run pytest` — full test suite
 - `uv run code-runner` — start server (stdio transport)
 - `CODE_RUNNER_METRICS=0` disables the JSONL metrics recorder (default: enabled, writes to `~/.cache/code-runner/metrics.jsonl`)
+- `CODE_RUNNER_READ_ROOTS=/a:/b` overrides the read-only roots (default `~/projects`)
 
 ## Security
 
 - `.mcp.json` is gitignored — local file holds project-only MCP server config including API keys
-- Sandbox forbids `import`, dunder access, file I/O outside workspace, subprocess
+- Sandbox forbids `import`, dunder access, subprocess, writes outside the session workspace,
+  and reads outside the read-only roots (or of secret-looking files inside them)
 - Skills run with full builtins (trusted local code), user code in `execute_code` does not
 
 ## Opt-in features
