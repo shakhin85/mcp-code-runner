@@ -10,3 +10,4 @@ models/
 
 # codegraph local index
 .codegraph/
+.dual-graph/
