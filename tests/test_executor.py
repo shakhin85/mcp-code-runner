@@ -4,7 +4,13 @@ import time
 
 import pytest
 
-from code_runner.executor import validate_code, CodeExecutor, _ToolNamespace
+from code_runner.executor import (
+    validate_code,
+    CodeExecutor,
+    _ToolNamespace,
+    MCPToolError,
+    MAX_ERROR_DETAIL,
+)
 
 
 class _FakeText:
@@ -13,25 +19,36 @@ class _FakeText:
 
 
 class _FakeResult:
-    def __init__(self, text):
+    def __init__(self, text, is_error=False):
         self.content = [_FakeText(text)]
+        self.isError = is_error
 
 
 class _FakeSession:
     """Test double: records the last call and returns a canned text payload."""
-    def __init__(self, payload_text):
+    def __init__(self, payload_text, is_error=False):
         self._payload = payload_text
+        self._is_error = is_error
         self.last_call = None
 
     async def call_tool(self, name, kwargs):
         self.last_call = (name, kwargs)
-        return _FakeResult(self._payload)
+        return _FakeResult(self._payload, is_error=self._is_error)
 
 
 class _FakeTool:
     def __init__(self, name, description=""):
         self.name = name
         self.description = description
+
+
+class _RecordingRecorder:
+    """Captures metric events so tests can assert on success/kind."""
+    def __init__(self):
+        self.events = []
+
+    def record(self, event):
+        self.events.append(event)
 
 
 class TestValidateCode:
@@ -333,6 +350,60 @@ class TestResultParsing:
         first = result[0]
         assert isinstance(first, dict), f"got {type(first).__name__}: {first!r}"
         assert first["a"] == decimal.Decimal("1.00")
+
+
+class TestIsErrorHandling:
+    """A tool result with isError=True must raise MCPToolError, not return the
+    error text as if it were a normal result."""
+
+    def _make_wrapper(self, payload, is_error=True):
+        session = _FakeSession(payload, is_error=is_error)
+        tool = _FakeTool("list_projects")
+        ns = _ToolNamespace("some_server", session, [tool])
+        return ns.list_projects
+
+    def test_error_result_raises(self):
+        wrapper = self._make_wrapper("backend blew up: enum reference")
+        with pytest.raises(MCPToolError, match="enum reference"):
+            asyncio.run(wrapper())
+
+    def test_error_message_names_server_and_tool(self):
+        wrapper = self._make_wrapper("boom")
+        with pytest.raises(MCPToolError, match=r"some_server\.list_projects"):
+            asyncio.run(wrapper())
+
+    def test_mcptoolerror_is_runtimeerror(self):
+        # Sandboxed code can only catch by builtin name; RuntimeError must work.
+        wrapper = self._make_wrapper("boom")
+        with pytest.raises(RuntimeError):
+            asyncio.run(wrapper())
+
+    def test_empty_error_content_still_raises(self):
+        wrapper = self._make_wrapper("")
+        with pytest.raises(MCPToolError, match="no error detail"):
+            asyncio.run(wrapper())
+
+    def test_long_error_detail_truncated(self):
+        wrapper = self._make_wrapper("x" * (MAX_ERROR_DETAIL + 500))
+        with pytest.raises(MCPToolError, match="truncated"):
+            asyncio.run(wrapper())
+
+    def test_ok_result_not_affected(self):
+        wrapper = self._make_wrapper('{"ok": true}', is_error=False)
+        result = asyncio.run(wrapper())
+        assert result == {"ok": True}
+
+    def test_error_call_recorded_as_failure(self):
+        # Metrics must see the failed call, mirroring the except path.
+        recorder = _RecordingRecorder()
+        session = _FakeSession("boom", is_error=True)
+        tool = _FakeTool("list_projects")
+        ns = _ToolNamespace("some_server", session, [tool], recorder=recorder)
+        with pytest.raises(MCPToolError):
+            asyncio.run(ns.list_projects())
+        assert recorder.events
+        assert recorder.events[-1]["success"] is False
+        assert recorder.events[-1]["kind"] == "tool_call"
 
 
 class TestAutoLimitInjection:

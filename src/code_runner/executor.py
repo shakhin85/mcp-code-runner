@@ -141,6 +141,11 @@ DEFAULT_AUTO_LIMIT = 500
 # Pass 0 to disable.
 DEFAULT_RAW_CAP = 262144  # 256 KB
 
+# Cap on the error text carried in an MCPToolError message. A misbehaving
+# backend can put a full traceback in an error result; keep it out of the
+# model's context while still showing enough to diagnose.
+MAX_ERROR_DETAIL = 4000
+
 SESSION_TTL = 600.0  # seconds; idle sessions older than this are evicted
 MAX_SESSIONS = 20    # LRU cap to bound memory
 
@@ -237,6 +242,20 @@ class _SandboxTimeout(BaseException):
     Inherits from BaseException (not Exception) so user code using
     `except Exception:` cannot accidentally swallow the timeout and keep
     spinning. KeyboardInterrupt and SystemExit use the same trick.
+    """
+
+
+class MCPToolError(RuntimeError):
+    """Raised when an MCP tool call returns an error result (isError=True).
+
+    A tool that fails puts the failure detail in `content` and sets isError,
+    rather than raising over the wire. Without this the wrapper would return
+    that error text as an ordinary string — indistinguishable from a real
+    result — so the model would treat a failure as data. Subclasses
+    RuntimeError so sandboxed user code can catch it by builtin name
+    (`except RuntimeError` / `except Exception`); the class itself is not
+    importable inside the sandbox, but `type(e).__name__` still reads
+    "MCPToolError" for diagnosis.
     """
 
 
@@ -499,6 +518,15 @@ class _ToolNamespace:
                         texts.append(json.dumps(content.data, ensure_ascii=False))
                 combined = "\n".join(texts)
                 out_bytes = len(combined.encode("utf-8"))
+                # A tool reporting an error (MCP isError=True) carries the
+                # failure detail in `content`. Surface it as an exception so
+                # user code can try/except and the model can't mistake an error
+                # for data. getattr keeps older/mock results (no isError) working.
+                if getattr(result, "isError", False):
+                    detail = combined.strip() or "(no error detail returned)"
+                    if len(detail) > MAX_ERROR_DETAIL:
+                        detail = detail[:MAX_ERROR_DETAIL] + " …[truncated]"
+                    raise MCPToolError(f"{server}.{tool_name} returned an error: {detail}")
                 # Byte cap at the SOURCE: a single tool response over raw_cap is
                 # returned as a truncated STRING (not parsed). out_bytes still
                 # records the true raw size for metrics (see finally block).
