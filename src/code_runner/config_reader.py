@@ -84,6 +84,17 @@ def _get_project_config_paths() -> list[Path]:
     ]
 
 
+def _expand_env(env: dict) -> dict[str, str]:
+    """Expand ${VAR}/$VAR references in env values from the current environment.
+
+    Claude Code expands these when spawning servers directly; code-runner spawns
+    child servers itself, so it must do the same or children receive the literal
+    "${VAR}" string (e.g. postgres -> 'missing "=" after "${POSTGRES_..._URI}"').
+    Unknown vars are left as-is by expandvars (current broken behaviour, no worse).
+    """
+    return {k: os.path.expandvars(v) if isinstance(v, str) else v for k, v in env.items()}
+
+
 def _parse_servers(
     data: dict,
     skip: set[str],
@@ -106,7 +117,7 @@ def _parse_servers(
                 name=name,
                 transport="http",
                 url=cfg.get("url", ""),
-                env=cfg.get("env", {}),
+                env=_expand_env(cfg.get("env", {})),
             )
         else:
             servers[name] = ServerConfig(
@@ -114,7 +125,7 @@ def _parse_servers(
                 transport="stdio",
                 command=cfg.get("command", ""),
                 args=cfg.get("args", []),
-                env=cfg.get("env", {}),
+                env=_expand_env(cfg.get("env", {})),
             )
 
 
