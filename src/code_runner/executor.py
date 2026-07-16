@@ -181,6 +181,11 @@ def _truncate_output(output: str, max_bytes: int) -> str:
 
     Protects the model's context from runaway MCP responses (SELECT * without
     LIMIT, large file dumps, etc.). Pass max_bytes <= 0 to disable.
+
+    A truncated result always carries a machine-readable
+    ``<system_hint>truncated: shown {shown_bytes} of {total_bytes} bytes</system_hint>``
+    marker, so a consuming model can detect partial output instead of
+    silently treating the truncated slice as the whole result.
     """
     if max_bytes <= 0 or not output:
         return output
@@ -189,9 +194,11 @@ def _truncate_output(output: str, max_bytes: int) -> str:
     if total_bytes <= max_bytes:
         return output
     kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    shown_bytes = len(kept.encode("utf-8"))
     footer = (
         f"\n\n... [TRUNCATED: output was {total_bytes} bytes, kept first "
         f"{max_bytes}. Use SQL LIMIT/TOP, pagination, or narrow your query.]"
+        f"\n<system_hint>truncated: shown {shown_bytes} of {total_bytes} bytes</system_hint>"
     )
     return kept + footer
 
