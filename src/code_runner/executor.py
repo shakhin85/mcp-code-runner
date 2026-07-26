@@ -30,7 +30,7 @@ import traceback
 import types
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from mcp import ClientSession
 from mcp.types import Tool
@@ -460,6 +460,27 @@ def _transform_last_expr(code: str) -> str:
     return code
 
 
+class _ToolCaller(Protocol):
+    """Что _ToolNamespace требует от пула: один способ позвать инструмент."""
+
+    async def call_tool(self, server_name: str, tool_name: str, arguments: dict): ...
+
+
+class _DirectSessionCaller:
+    """Адаптер «пул из одной сессии»: тот же call_tool, но без реконнекта.
+
+    Нужен там, где пула нет или он — тестовый дубль, стабящий только
+    sessions/tools. Благодаря ему боевой путь вызова остаётся БЕЗУСЛОВНЫМ:
+    ветка «пул или сессия» решается один раз при сборке namespace, а не на
+    каждом вызове инструмента."""
+
+    def __init__(self, session: ClientSession):
+        self._session = session
+
+    async def call_tool(self, server_name: str, tool_name: str, arguments: dict):
+        return await self._session.call_tool(tool_name, arguments)
+
+
 class _ToolNamespace:
     """Proxy object representing a single MCP server's tools in exec namespace."""
 
@@ -472,7 +493,7 @@ class _ToolNamespace:
         stats: dict[str, int] | None = None,
         recorder: "MetricsRecorder | None" = None,
         raw_cap: int = 0,
-        pool: Any = None,
+        pool: "_ToolCaller | None" = None,
     ):
         self._server_name = server_name
         self._session = session
@@ -482,12 +503,16 @@ class _ToolNamespace:
         self._stats = stats
         self._recorder = recorder
         self._raw_cap = raw_cap
-        # When set, tool calls go through pool.call_tool() instead of the
-        # session captured at build time, so a dead/restarted MCP session
-        # (e.g. "McpError: Session terminated") gets reconnected transparently.
-        # Without a pool (unit tests constructing this directly with a mock
-        # session), calls go straight to `session.call_tool` as before.
-        self._pool = pool
+        # Вызовы идут через пул, а не через захваченную при сборке сессию:
+        # мёртвая/перезапущенная MCP-сессия так переподключается прозрачно
+        # (MCPClientPool.call_tool = reconnect + один retry).
+        # Пула нет или это дубль без call_tool → адаптер над сессией; выбор
+        # делается ЗДЕСЬ, один раз, чтобы в горячем пути ветки не было.
+        self._caller: _ToolCaller = (
+            pool
+            if callable(getattr(pool, "call_tool", None))
+            else _DirectSessionCaller(session)
+        )
 
         for tool in tools:
             py_attr = tool.name.replace("-", "_")
@@ -510,14 +535,9 @@ class _ToolNamespace:
         return False
 
     def _make_wrapper(self, tool_name: str):
-        session = self._session
         server = self._server_name
         raw_cap = self._raw_cap
-        pool = self._pool
-        # Real MCPClientPool exposes call_tool (reconnect-on-dead-session +
-        # single retry). Test doubles that only stub `sessions`/`tools` fall
-        # back to calling the captured session directly, unchanged.
-        use_pool = pool is not None and hasattr(pool, "call_tool")
+        caller = self._caller
 
         async def wrapper(**kwargs):
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
@@ -528,12 +548,7 @@ class _ToolNamespace:
             error: str | None = None
             out_bytes = 0
             try:
-                if use_pool:
-                    # Goes through MCPClientPool.call_tool, which reconnects
-                    # once on a dead/restarted session and retries.
-                    result = await pool.call_tool(server, tool_name, kwargs)
-                else:
-                    result = await session.call_tool(tool_name, kwargs)
+                result = await caller.call_tool(server, tool_name, kwargs)
                 texts = []
                 for content in result.content:
                     if hasattr(content, "text"):

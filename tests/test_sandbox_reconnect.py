@@ -73,3 +73,29 @@ def test_sandbox_execute_code_reconnects_through_tool_namespace():
     assert result["success"] is True
     assert dead.calls == 1  # sandbox call hit the dead session once
     assert fresh.calls == 1  # ... then the reconnected session served it
+
+
+def test_namespace_resolves_caller_once_at_build_time():
+    """Гармонизация двух фиксов: выбор «пул или сессия» делается один раз при
+    сборке namespace, а не в каждом вызове инструмента.
+
+    Пул с call_tool → зовём пул (реконнект работает). Дубль пула без call_tool
+    (такие есть в юнит-тестах) → адаптер над сессией, поведение прежнее."""
+    from code_runner.executor import _DirectSessionCaller, _ToolNamespace
+
+    class _Pool:
+        async def call_tool(self, server_name, tool_name, arguments):
+            return "via-pool"
+
+    class _Stub:  # дубль, стабящий только sessions/tools
+        sessions: dict = {}
+        tools: dict = {}
+
+    real = _ToolNamespace("srv", session=object(), tools=[], pool=_Pool())
+    assert not isinstance(real._caller, _DirectSessionCaller)
+
+    stubbed = _ToolNamespace("srv", session=object(), tools=[], pool=_Stub())
+    assert isinstance(stubbed._caller, _DirectSessionCaller)
+
+    no_pool = _ToolNamespace("srv", session=object(), tools=[])
+    assert isinstance(no_pool._caller, _DirectSessionCaller)
