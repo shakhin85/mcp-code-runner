@@ -129,7 +129,11 @@ class MCPClientPool:
     )
 
     def _is_reconnectable(self, exc: Exception) -> bool:
-        msg = str(exc).lower()
+        # Класс в текст матчинга включён намеренно: anyio.ClosedResourceError
+        # приходит с ПУСТЫМ сообщением, поэтому по str(exc) маркер
+        # "closedresource" не находился никогда и реконнект не срабатывал —
+        # ровно на 1С-серверах, ради которых он и писался.
+        msg = f"{type(exc).__name__} {exc}".lower()
         return any(marker in msg for marker in self._RECONNECTABLE)
 
     async def _reconnect(self, server_name: str) -> None:

@@ -51,6 +51,26 @@ def test_reconnects_and_retries_on_session_terminated():
     assert fresh.calls == 1  # retried once on the fresh session
 
 
+def test_reconnects_on_empty_message_closed_resource():
+    """anyio.ClosedResourceError несёт ПУСТОЕ сообщение — маркер живёт только
+    в имени класса. Матчинг по одному str(exc) не ловил его никогда, из-за чего
+    1С-серверы навсегда отваливались после первого обрыва вместо реконнекта."""
+    import anyio
+
+    dead = _Session(fail_with=anyio.ClosedResourceError())
+    fresh = _Session(payload="recovered")
+    pool = _pool_with(dead)
+
+    async def fake_connect(name, cfg):
+        pool.sessions[name] = fresh
+
+    pool._connect = fake_connect  # type: ignore[assignment]
+
+    assert str(dead.fail_with) == ""  # предпосылка бага
+    assert asyncio.run(pool.call_tool("srv", "execute_query", {})) == "recovered"
+    assert fresh.calls == 1
+
+
 def test_non_transport_error_propagates_without_reconnect():
     bad = _Session(fail_with=ValueError("validation: missing required field"))
     pool = _pool_with(bad)
