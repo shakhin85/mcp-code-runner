@@ -18,6 +18,8 @@ import heapq
 import itertools
 import json
 import math
+import multiprocessing
+import os
 import random
 import re
 import signal
@@ -68,12 +70,15 @@ _SAFE_ASYNCIO.gather = asyncio.gather
 _SAFE_ASYNCIO.wait_for = asyncio.wait_for
 
 # Pre-imported stdlib modules available in sandbox without `import` statements.
-# Each is filesystem/process-free and safe for arbitrary LLM-generated code.
-# Dunder access is blocked because attributes like __class__, __globals__ and
-# __subclasses__ walk out of the sandbox. __name__ does not: it yields a plain
-# string. Blocking it only forced `print(type(e).__name__)` — the ordinary way
-# to name an exception — to be rewritten, which is friction with no security to
-# show for it.
+# These do no filesystem/process/network work *themselves*, but several
+# re-export os/sys/socket/etc. as ordinary attributes (uuid.os, dataclasses.sys,
+# random._os, …) — a live escape until wrapped. They are NOT exposed raw: each
+# is placed in the namespace as a _RestrictedModule (see below), which refuses
+# any attribute that is itself a module. Dunder access is blocked too, because
+# attributes like __class__, __globals__ and __subclasses__ walk out of the
+# sandbox. __name__ does not: it yields a plain string. Blocking it only forced
+# `print(type(e).__name__)` — the ordinary way to name an exception — to be
+# rewritten, which is friction with no security to show for it.
 ALLOWED_DUNDER_ATTRS = frozenset({"__name__"})
 
 SAFE_MODULES = {
@@ -98,6 +103,55 @@ SAFE_MODULES = {
     "heapq": heapq,
     "bisect": bisect,
 }
+
+class _RestrictedModule:
+    """Attribute-restricted view over a stdlib module exposed in the sandbox.
+
+    The AST guard only blocks dunder attributes, but the pure-compute modules in
+    SAFE_MODULES re-export *other* modules as ordinary, non-dunder attributes:
+    ``uuid.os``, ``uuid.sys``, ``dataclasses.sys``, ``statistics.sys``,
+    ``random._os``, ``collections._sys``, ``json.codecs`` … Any one of them is a
+    one-liner to ``sys.modules`` and from there to ``os``/``socket``/``builtins``
+    — a full escape that ignores every workspace and read-root control.
+
+    This wrapper closes the class of vector by TYPE rather than by name: any
+    attribute whose value is itself a module is refused, so ``uuid.uuid4`` still
+    works while ``uuid.os`` raises AttributeError. Dunder access is refused too
+    (belt-and-suspenders with the AST guard), except the harmless ``__name__``.
+    """
+
+    __slots__ = ("_mod", "_name")
+
+    def __init__(self, mod: types.ModuleType) -> None:
+        object.__setattr__(self, "_mod", mod)
+        object.__setattr__(self, "_name", getattr(mod, "__name__", "?"))
+
+    def __getattr__(self, attr: str) -> Any:
+        # Only fires for names not in __slots__, so _mod/_name never recurse.
+        if attr.startswith("__") and attr.endswith("__") and attr not in ALLOWED_DUNDER_ATTRS:
+            raise AttributeError(
+                f"dunder attribute '{self._name}.{attr}' is blocked in the sandbox"
+            )
+        value = getattr(self._mod, attr)
+        if isinstance(value, types.ModuleType):
+            raise AttributeError(
+                f"module attribute '{self._name}.{attr}' is blocked in the sandbox "
+                "(re-exported modules are an escape vector)"
+            )
+        return value
+
+    def __repr__(self) -> str:
+        return f"<sandboxed module '{self._name}'>"
+
+
+# Built once at import — the wrappers are stateless, so a single instance per
+# module is shared across all sandbox namespaces. Used in _build_namespace.
+_SAFE_MODULES_WRAPPED: dict[str, _RestrictedModule] = {
+    name: _RestrictedModule(mod) for name, mod in SAFE_MODULES.items()
+}
+_SAFE_ASYNCIO_WRAPPED = _RestrictedModule(_SAFE_ASYNCIO)
+_JSON_WRAPPED = _RestrictedModule(json)
+
 
 # Namespace for parsing Python-repr responses from MCP servers (e.g. postgres
 # returns str(list_of_dicts) containing Decimal(...) and datetime literals).
@@ -146,10 +200,46 @@ DEFAULT_RAW_CAP = 262144  # 256 KB
 # model's context while still showing enough to diagnose.
 MAX_ERROR_DETAIL = 4000
 
+# Cap on the `error` field of a run result. `output` is already truncated, but
+# the error was not: `raise ValueError('q' * 300000)` put 300 KB straight into
+# the model's context. A raised exception's message is attacker- and
+# accident-reachable, so cap it the same way — enough to diagnose, not a bomb.
+MAX_ERROR_BYTES = 8192
+
 SESSION_TTL = 600.0  # seconds; idle sessions older than this are evicted
 MAX_SESSIONS = 20    # LRU cap to bound memory
 
 DEFAULT_WORKSPACE_ROOT = Path.home() / ".cache" / "code-runner" / "workspace"
+
+# --- Subprocess isolation (P0.1) -------------------------------------------
+# Running user code in the server's own interpreter means one escape, OOM, or
+# off-main-thread CPU loop takes the server (and every live MCP session's
+# credentials) with it. When enabled, each call runs in a fresh, rlimited,
+# env-scrubbed child process instead; MCP calls are proxied back to the parent.
+# Opt-in for now (behaviour/latency change) via CODE_RUNNER_ISOLATION=subprocess.
+_ISOLATION_DEFAULT = os.environ.get("CODE_RUNNER_ISOLATION", "inprocess").strip().lower()
+_MEM_LIMIT_MB_DEFAULT = int(os.environ.get("CODE_RUNNER_MEM_LIMIT_MB", "2048"))
+_FSIZE_LIMIT_MB_DEFAULT = int(os.environ.get("CODE_RUNNER_FSIZE_LIMIT_MB", "64"))
+
+# rlimits live in the `resource` module (POSIX only), so isolation is POSIX-only.
+_SUBPROCESS_AVAILABLE = sys.platform != "win32"
+
+# Start method matters for the security boundary, not just speed. `spawn` gives a
+# brand-new interpreter: no copy-on-write inheritance of the parent's heap (live
+# MCP sessions, credentials), and the parent's fds are CLOEXEC so they don't leak
+# either. `forkserver` is faster but the forkserver is born at first use — by then
+# the server already holds credentials in memory, which the child inherits via COW
+# and an escaped child could read out of /proc/self/mem. So `spawn` is the default;
+# forkserver/fork are opt-in for anyone who accepts that trade for latency.
+_START_METHOD_DEFAULT = os.environ.get("CODE_RUNNER_START_METHOD", "spawn").strip().lower()
+_AVAILABLE_START_METHODS = multiprocessing.get_all_start_methods()
+if _START_METHOD_DEFAULT in _AVAILABLE_START_METHODS:
+    _MP_START_METHOD = _START_METHOD_DEFAULT
+elif "spawn" in _AVAILABLE_START_METHODS:
+    _MP_START_METHOD = "spawn"
+else:
+    _MP_START_METHOD = _AVAILABLE_START_METHODS[0]
+_EOF = object()  # sentinel: the worker pipe closed (child killed or crashed)
 
 # Server-name prefix → sqlglot dialect for auto-LIMIT injection.
 # Exact-match "mssql" included; postgres variants matched by prefix.
@@ -201,6 +291,22 @@ def _truncate_output(output: str, max_bytes: int) -> str:
         f"\n<system_hint>truncated: shown {shown_bytes} of {total_bytes} bytes</system_hint>"
     )
     return kept + footer
+
+
+def _truncate_error(error: str | None, max_bytes: int) -> str | None:
+    """Cap the run's error text (UTF-8 safe) with a marker. None/short passes through."""
+    if error is None or max_bytes <= 0:
+        return error
+    encoded = error.encode("utf-8")
+    total = len(encoded)
+    if total <= max_bytes:
+        return error
+    kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return (
+        kept
+        + f"\n...[ERROR TRUNCATED: {total} bytes, kept first {max_bytes}]"
+        + f"\n<system_hint>error truncated: shown {len(kept.encode('utf-8'))} of {total} bytes</system_hint>"
+    )
 
 
 def _fmt_bytes(n: int) -> str:
@@ -638,11 +744,21 @@ class CodeExecutor:
         recorder: "MetricsRecorder | None" = None,
         workspace: "WorkspaceManager | None" = None,
         skills: "SkillsNamespace | None" = None,
+        isolation: str | None = None,
+        mem_limit_mb: int | None = None,
+        fsize_limit_mb: int | None = None,
     ):
         self.pool = pool
         self.recorder = recorder
         self.workspace = workspace if workspace is not None else WorkspaceManager(DEFAULT_WORKSPACE_ROOT)
         self.skills = skills
+        # "subprocess" runs each call in a fresh, rlimited child; "inprocess" is
+        # the legacy same-interpreter path. Ignored (forced inprocess) where the
+        # `resource` module is unavailable.
+        chosen = (isolation or _ISOLATION_DEFAULT)
+        self._isolation = chosen if _SUBPROCESS_AVAILABLE else "inprocess"
+        self._mem_limit_mb = mem_limit_mb if mem_limit_mb is not None else _MEM_LIMIT_MB_DEFAULT
+        self._fsize_limit_mb = fsize_limit_mb if fsize_limit_mb is not None else _FSIZE_LIMIT_MB_DEFAULT
         # Signals are process-global and can only be armed from the main
         # thread — serialize executions so two concurrent calls can't clobber
         # each other's SIGALRM state.
@@ -677,6 +793,29 @@ class CodeExecutor:
         state.last_access = time.monotonic()
         return state
 
+    def _build_proxies(
+        self,
+        auto_limit: int,
+        stats: dict[str, int] | None,
+        raw_cap: int,
+    ) -> dict[str, "_ToolNamespace"]:
+        """One MCP proxy object per connected server. Shared by the in-process
+        namespace and the subprocess broker (which dispatches remote calls to
+        these same objects)."""
+        proxies: dict[str, _ToolNamespace] = {}
+        for server_name, session in self.pool.sessions.items():
+            py_name = server_name_to_py(server_name)
+            tools = self.pool.tools.get(server_name, [])
+            proxies[py_name] = _ToolNamespace(
+                server_name, session, tools,
+                auto_limit=auto_limit,
+                stats=stats,
+                recorder=self.recorder,
+                raw_cap=raw_cap,
+                pool=self.pool,
+            )
+        return proxies
+
     def _build_namespace(
         self,
         session_id: str | None = None,
@@ -688,9 +827,9 @@ class CodeExecutor:
         safe_builtins = {name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)}
         namespace: dict[str, Any] = {
             "__builtins__": safe_builtins,
-            "asyncio": _SAFE_ASYNCIO,
-            "json": json,
-            **SAFE_MODULES,
+            "asyncio": _SAFE_ASYNCIO_WRAPPED,
+            "json": _JSON_WRAPPED,
+            **_SAFE_MODULES_WRAPPED,
         }
 
         # Workspace-bound open(): when session_id is set, writes go into
@@ -715,17 +854,7 @@ class CodeExecutor:
                 raise WorkspaceError("open() requires session_id")
             namespace["open"] = _denied
 
-        for server_name, session in self.pool.sessions.items():
-            py_name = server_name_to_py(server_name)
-            tools = self.pool.tools.get(server_name, [])
-            namespace[py_name] = _ToolNamespace(
-                server_name, session, tools,
-                auto_limit=auto_limit,
-                stats=stats,
-                recorder=self.recorder,
-                raw_cap=raw_cap,
-                pool=self.pool,
-            )
+        namespace.update(self._build_proxies(auto_limit, stats, raw_cap))
 
         if self.skills is not None:
             namespace["skills"] = self.skills
@@ -761,6 +890,116 @@ class CodeExecutor:
             and not (k.startswith("__") and k.endswith("__"))
         }
 
+    async def _run_in_subprocess(
+        self,
+        code: str,
+        session_id: str | None,
+        timeout: float,
+        auto_limit: int,
+        raw_cap: int,
+        stats: dict[str, int],
+    ) -> tuple[bool, str, str | None]:
+        """Run user code in a fresh rlimited child; proxy its MCP calls back here.
+
+        The child holds no live sessions, so each tool call it makes is sent over
+        the pipe, executed against the real proxy in *this* process (so auto-LIMIT,
+        raw-cap, parsing, stats and metrics all still apply), and the parsed result
+        returned. On timeout the child is SIGKILLed — the containment the
+        in-process path can't offer.
+        """
+        from . import subprocess_worker  # lazy: the worker imports from this module
+
+        proxies = self._build_proxies(auto_limit, stats, raw_cap)
+        servers = [
+            {"py_name": py_name, "tools": [n.replace("-", "_") for n in proxy._tools]}
+            for py_name, proxy in proxies.items()
+        ]
+
+        # Restore this session's persisted vars (an opaque pickled blob produced
+        # by a prior child). {} means "no prior state yet".
+        persisted: bytes | None = None
+        if session_id is not None:
+            state = self._get_or_create_session(session_id)
+            if isinstance(state.user_vars, (bytes, bytearray)):
+                persisted = bytes(state.user_vars)
+
+        payload = {
+            "code": code,
+            "session_id": session_id,
+            "workspace_root": str(self.workspace.root) if self.workspace is not None else None,
+            "servers": servers,
+            "user_vars": persisted,
+            "limits": {
+                "mem_bytes": self._mem_limit_mb * 1024 * 1024 if self._mem_limit_mb else 0,
+                "cpu_s": int(timeout) + 2,
+                "fsize_bytes": self._fsize_limit_mb * 1024 * 1024 if self._fsize_limit_mb else 0,
+            },
+        }
+
+        ctx = multiprocessing.get_context(_MP_START_METHOD)
+        parent_conn, child_conn = ctx.Pipe()
+        proc = ctx.Process(
+            target=subprocess_worker.run_worker,
+            args=(child_conn, payload),
+            daemon=True,
+        )
+        proc.start()
+        child_conn.close()  # only the child uses its end
+        loop = asyncio.get_running_loop()
+
+        def _recv() -> Any:
+            try:
+                return parent_conn.recv()
+            except (EOFError, OSError):
+                return _EOF
+
+        async def _serve() -> dict[str, Any]:
+            while True:
+                msg = await loop.run_in_executor(None, _recv)
+                if msg is _EOF:
+                    return {
+                        "success": False, "output": "",
+                        "error": "isolation worker died before returning a result",
+                        "user_vars": None,
+                    }
+                tag, body = msg
+                if tag == "call":
+                    req_id, py_server, tool_attr, kwargs = body
+                    try:
+                        wrapper = getattr(proxies[py_server], tool_attr)
+                        value = await wrapper(**kwargs)
+                        parent_conn.send(("resp", (req_id, "ok", value)))
+                    except BaseException as e:
+                        parent_conn.send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
+                elif tag == "done":
+                    return body
+
+        try:
+            result = await asyncio.wait_for(_serve(), timeout=timeout)
+        except asyncio.TimeoutError:
+            result = {
+                "success": False, "output": "",
+                "error": f"Execution timed out after {timeout}s (isolation subprocess killed)",
+                "user_vars": None,
+            }
+        finally:
+            if proc.is_alive():
+                proc.kill()
+            await loop.run_in_executor(None, proc.join)
+            parent_conn.close()
+
+        if (
+            session_id is not None
+            and result.get("success")
+            and result.get("user_vars") is not None
+        ):
+            st = self._sessions.get(session_id)
+            if st is not None:
+                st.user_vars = result["user_vars"]
+                st.last_access = time.monotonic()
+
+        return bool(result.get("success")), result.get("output") or "", result.get("error")
+
     async def execute(
         self,
         code: str,
@@ -793,6 +1032,7 @@ class CodeExecutor:
         }
 
         def finalize(success: bool, output: str, error: str | None) -> dict[str, Any]:
+            error = _truncate_error(error, MAX_ERROR_BYTES)
             truncated = _truncate_output(output, max_output_bytes)
             truncated = _append_cost_footer(
                 truncated, stats, elapsed_ms=(time.monotonic() - start_exec) * 1000
@@ -825,6 +1065,21 @@ class CodeExecutor:
             return finalize(False, "", str(e))
 
         code = _transform_last_expr(code)
+
+        # Subprocess isolation path: run in a fresh rlimited child. finalize()
+        # (truncation, error cap, cost footer, metrics) and stats — populated by
+        # the broker's proxy calls — are shared with the in-process path below.
+        if self._isolation == "subprocess" and _SUBPROCESS_AVAILABLE:
+            try:
+                success, output, error = await self._run_in_subprocess(
+                    code, session_id, timeout, auto_limit, raw_cap, stats
+                )
+            except Exception as e:
+                return finalize(
+                    False, "",
+                    f"isolation error: {type(e).__name__}: {e}\n{traceback.format_exc()}",
+                )
+            return finalize(success, output, error)
 
         namespace, framework_names = self._build_namespace(
             session_id, auto_limit, stats, raw_cap

@@ -213,6 +213,222 @@ class TestSandboxNamespace:
         assert "True" in result["output"]
 
 
+class TestModuleReexportEscape:
+    """The AST guard blocks only dunder attributes, but the pure-compute modules
+    in SAFE_MODULES re-export *other* modules as ordinary attributes
+    (`uuid.os`, `dataclasses.sys`, `random._os`, …). Each is a one-liner to
+    `sys.modules` and a full escape. These are the vectors confirmed live during
+    the 2026-07-26 audit — they must all be closed by _RestrictedModule.
+    """
+
+    @pytest.fixture
+    def executor(self):
+        class FakePool:
+            sessions = {}
+            tools = {}
+        return CodeExecutor(FakePool())
+
+    # (label, code) — each attempts to reach os/sys/socket/builtins via a re-export.
+    ESCAPES = [
+        ("uuid.os", "print(uuid.os.getpid())"),
+        ("uuid.sys", "print(uuid.sys.modules['socket'])"),
+        ("dataclasses.sys", "print(dataclasses.sys.modules['builtins'].open('/etc/hostname').read())"),
+        ("statistics.sys", "print(statistics.sys.modules['os'])"),
+        ("random._os", "print(random._os.getuid())"),
+        ("collections._sys", "print(collections._sys.modules['os'])"),
+        ("json.codecs", "print(json.codecs.open)"),
+        ("base64.binascii", "print(base64.binascii)"),
+    ]
+
+    @pytest.mark.parametrize("label,code", ESCAPES, ids=[e[0] for e in ESCAPES])
+    def test_reexport_escape_blocked(self, executor, label, code):
+        result = asyncio.run(executor.execute(code))
+        assert result["success"] is False, f"{label} escaped the sandbox"
+        assert "blocked" in (result["error"] or "").lower(), result["error"]
+
+    def test_no_file_read_via_reexport(self, executor):
+        # The most damaging concrete payload from the audit: reading a file far
+        # outside the workspace / read-roots. Must produce no file contents.
+        result = asyncio.run(executor.execute(
+            "data = dataclasses.sys.modules['builtins'].open('/etc/hostname').read()\n"
+            "print(data)"
+        ))
+        assert result["success"] is False
+
+    # Legitimate, non-module attributes must keep working — the wrapper blocks by
+    # TYPE (module), so normal library use is untouched.
+    LEGIT = [
+        ("uuid.uuid4", "print(type(uuid.uuid4()).__name__)", "UUID"),
+        ("dataclasses.dataclass", "print(callable(dataclasses.dataclass))", "True"),
+        ("collections.OrderedDict", "print(len(collections.OrderedDict([('a', 1)])))", "1"),
+        ("json.dumps", "print(json.dumps({'a': 1}))", '{"a": 1}'),
+        ("base64.b64encode", "print(base64.b64encode(bytes([65])).decode())", "QQ=="),
+        ("random.Random", "print(random.Random(1).randint(5, 5))", "5"),
+        ("re.compile", "print(re.compile(r'\\d+').match('42').group())", "42"),
+        ("uuid.__name__", "print(uuid.__name__)", "uuid"),
+    ]
+
+    @pytest.mark.parametrize("label,code,expected", LEGIT, ids=[e[0] for e in LEGIT])
+    def test_legit_module_use_unbroken(self, executor, label, code, expected):
+        result = asyncio.run(executor.execute(code))
+        assert result["success"] is True, f"{label}: {result['error']}"
+        assert expected in result["output"]
+
+
+class TestErrorTruncation:
+    """A raised exception's message is attacker/accident-reachable and was NOT
+    capped: `raise ValueError('q' * 300000)` put 300 KB straight into context.
+    """
+
+    @pytest.fixture
+    def executor(self):
+        class FakePool:
+            sessions = {}
+            tools = {}
+        return CodeExecutor(FakePool())
+
+    def test_huge_error_is_capped(self, executor):
+        from code_runner.executor import MAX_ERROR_BYTES
+        result = asyncio.run(executor.execute("raise ValueError('q' * 300000)"))
+        assert result["success"] is False
+        # Cap + a bounded marker/hint suffix — nowhere near the raw 300 KB.
+        assert len(result["error"].encode("utf-8")) < MAX_ERROR_BYTES + 512
+        assert "truncated" in result["error"].lower()
+
+    def test_short_error_untouched(self, executor):
+        result = asyncio.run(executor.execute("raise ValueError('boom')"))
+        assert result["success"] is False
+        assert "boom" in result["error"]
+        assert "truncated" not in result["error"].lower()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="subprocess isolation is POSIX-only")
+class TestSubprocessIsolation:
+    """P0.1: each call runs in a fresh, rlimited child process; MCP calls are
+    proxied back to the parent. Verifies the broker round-trips, resource limits
+    bite, timeouts kill the child, persistence survives, and the module-reexport
+    escape stays closed inside the child too."""
+
+    def _executor(self, pool=None):
+        class FakePool:
+            sessions = {}
+            tools = {}
+        # Generous mem cap so the child's own imports fit; individual tests that
+        # probe the limit allocate well past it.
+        return CodeExecutor(
+            pool or FakePool(),
+            isolation="subprocess",
+            mem_limit_mb=1024,
+        )
+
+    def test_basic_output_in_child(self):
+        ex = self._executor()
+        result = asyncio.run(ex.execute("print('from child', 1 + 2)"))
+        assert result["success"] is True, result["error"]
+        assert "from child 3" in result["output"]
+
+    def test_last_expr_autodisplay(self):
+        ex = self._executor()
+        result = asyncio.run(ex.execute("sum(range(10))"))
+        assert result["success"] is True, result["error"]
+        assert "45" in result["output"]
+
+    def test_memory_limit_kills_allocation(self):
+        # ~8 GB list under a 1 GB address-space cap → MemoryError in the child,
+        # not an OOM that takes the whole server down.
+        ex = self._executor()
+        result = asyncio.run(ex.execute("x = [0] * (10 ** 9)\nprint(len(x))"))
+        assert result["success"] is False
+        assert "Error" in (result["error"] or "")
+
+    def test_cpu_loop_is_killed(self):
+        ex = self._executor()
+        start = time.monotonic()
+        result = asyncio.run(ex.execute("while True:\n    pass", timeout=0.5))
+        elapsed = time.monotonic() - start
+        assert result["success"] is False
+        assert "timed out" in (result["error"] or "").lower()
+        assert elapsed < 3.0, f"child not killed promptly, took {elapsed:.2f}s"
+
+    def test_reexport_escape_blocked_in_child(self):
+        ex = self._executor()
+        result = asyncio.run(ex.execute("print(uuid.os.getpid())"))
+        assert result["success"] is False
+        assert "blocked" in (result["error"] or "").lower()
+
+    def test_proxy_call_round_trips(self):
+        # A fake server whose tool returns JSON; the child calls it via the
+        # broker and gets back the parsed object.
+        class FakePool:
+            sessions = {"db": _FakeSession('[{"n": 7}]')}
+            tools = {"db": [_FakeTool("echo")]}
+        ex = self._executor(FakePool())
+        result = asyncio.run(ex.execute("rows = await db.echo(x=1)\nprint(rows[0]['n'])"))
+        assert result["success"] is True, result["error"]
+        assert "7" in result["output"]
+        # Cost footer proves the proxy call was accounted in the parent's stats.
+        assert "[cr]" in result["output"]
+
+    def test_proxy_error_surfaces_in_child(self):
+        class FakePool:
+            sessions = {"db": _FakeSession("boom", is_error=True)}
+            tools = {"db": [_FakeTool("echo")]}
+        ex = self._executor(FakePool())
+        code = (
+            "try:\n"
+            "    await db.echo()\n"
+            "    print('no error')\n"
+            "except Exception as e:\n"
+            "    print('caught', type(e).__name__)"
+        )
+        result = asyncio.run(ex.execute(code))
+        assert result["success"] is True, result["error"]
+        assert "caught MCPToolError" in result["output"]
+
+    def test_gather_over_proxies_serializes_correctly(self):
+        # Concurrent proxy calls (asyncio.gather) share one pipe; the child's lock
+        # keeps them single-flight. They must not deadlock or cross responses.
+        class FakePool:
+            sessions = {"db": _FakeSession('{"ok": 1}')}
+            tools = {"db": [_FakeTool("echo")]}
+        ex = self._executor(FakePool())
+        code = (
+            "res = await asyncio.gather(db.echo(x=1), db.echo(x=2), db.echo(x=3))\n"
+            "print(len(res), res[0]['ok'], res[2]['ok'])"
+        )
+        result = asyncio.run(ex.execute(code))
+        assert result["success"] is True, result["error"]
+        assert "3 1 1" in result["output"]
+
+    def test_session_vars_persist_across_calls(self):
+        ex = self._executor()
+        r1 = asyncio.run(ex.execute("x = 42", session_id="s1"))
+        assert r1["success"] is True, r1["error"]
+        r2 = asyncio.run(ex.execute("print(x + 1)", session_id="s1"))
+        assert r2["success"] is True, r2["error"]
+        assert "43" in r2["output"]
+
+    def test_workspace_write_confined(self):
+        ex = self._executor()
+        code = (
+            "with open('note.txt', 'w') as f:\n"
+            "    f.write('hi')\n"
+            "with open('note.txt') as f:\n"
+            "    print(f.read())"
+        )
+        result = asyncio.run(ex.execute(code, session_id="ws1"))
+        assert result["success"] is True, result["error"]
+        assert "hi" in result["output"]
+
+    def test_inprocess_still_default(self):
+        # The behaviour change is opt-in: a default executor stays in-process.
+        class FakePool:
+            sessions = {}
+            tools = {}
+        ex = CodeExecutor(FakePool())
+        assert ex._isolation == "inprocess"
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGALRM is POSIX-only")
 class TestCpuHangProtection:
     """Pure-CPU loops in user code must be interruptible.

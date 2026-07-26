@@ -48,6 +48,12 @@ sandbox stops being a matter of faith.
 - `uv run code-runner` — start server (stdio transport)
 - `CODE_RUNNER_METRICS=0` disables the JSONL metrics recorder (default: enabled, writes to `~/.cache/code-runner/metrics.jsonl`)
 - `CODE_RUNNER_READ_ROOTS=/a:/b` overrides the read-only roots (default `~/projects`)
+- `CODE_RUNNER_ISOLATION=subprocess` runs each `execute_code` call in a fresh, rlimited
+  child process instead of the server's own interpreter (default `inprocess`). See Security.
+- `CODE_RUNNER_MEM_LIMIT_MB` / `CODE_RUNNER_FSIZE_LIMIT_MB` — child `RLIMIT_AS` / `RLIMIT_FSIZE`
+  caps under subprocess isolation (defaults 2048 / 64 MB)
+- `CODE_RUNNER_START_METHOD` — child start method (default `spawn`; `forkserver` is faster but
+  reintroduces copy-on-write memory inheritance from the parent, so it's opt-in)
 
 ## Security
 
@@ -56,6 +62,16 @@ sandbox stops being a matter of faith.
   and opens no escape — `print(type(e).__name__)` is allowed), subprocess, writes outside
   the session workspace, and reads outside the read-only roots (or of secret-looking files
   inside them)
+- The AST + safe-builtins layer is a **filter, not a boundary**: several SAFE_MODULES
+  re-export os/sys/socket as ordinary attributes (`uuid.os`, `dataclasses.sys`, …), so each
+  is wrapped in a `_RestrictedModule` that refuses module-typed attributes. The exception
+  field is truncated (`MAX_ERROR_BYTES`) like the output, so a raised error can't be a
+  context bomb.
+- **Subprocess isolation** (`CODE_RUNNER_ISOLATION=subprocess`, opt-in) is the real
+  containment: user code runs in a per-call child with `RLIMIT_AS`/`RLIMIT_CPU`/`RLIMIT_FSIZE`
+  and a scrubbed environment; MCP calls are proxied back to the parent (live sessions never
+  reach the child). An escape, OOM, or CPU loop is confined to a killable process, not the
+  server. Persisted session vars must be picklable to cross the process boundary.
 - Skills run with full builtins (trusted local code), user code in `execute_code` does not
 
 ## Opt-in features
