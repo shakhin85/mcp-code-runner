@@ -39,7 +39,7 @@ from mcp.types import Tool
 
 from . import prelude as _prelude
 from .config_reader import server_name_to_py
-from .metrics import MetricsRecorder
+from .metrics import MetricsRecorder, code_fingerprint
 from .sql_limit import inject_limit
 from .skills import SkillsNamespace
 from .workspace import WorkspaceManager, safe_open, WorkspaceError
@@ -1027,6 +1027,10 @@ class CodeExecutor:
         raw_cap: int = DEFAULT_RAW_CAP,
     ) -> dict[str, Any]:
         start_exec = time.monotonic()
+        # Fingerprint the code as the caller sent it, before _transform_last_expr
+        # rewrites it — identical snippets must hash identically across calls.
+        code_sha = code_fingerprint(code)
+        code_lines = code.count("\n") + 1
         stats: dict[str, int] = {
             "tool_calls": 0, "auto_limit_hits": 0, "str_results": 0, "raw_tool_bytes": 0,
         }
@@ -1052,6 +1056,8 @@ class CodeExecutor:
                         "tool_calls": stats["tool_calls"],
                         "auto_limit_hits": stats["auto_limit_hits"],
                         "session_id": session_id,
+                        "code_sha": code_sha,
+                        "code_lines": code_lines,
                         "error": error,
                     })
                 except Exception:

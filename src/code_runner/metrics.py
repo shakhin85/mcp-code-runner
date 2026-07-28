@@ -7,6 +7,7 @@ filtering (time/server/kind) so `get_metrics` MCP tool can surface recent
 activity without pulling the whole history.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -18,6 +19,18 @@ from typing import Any
 
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 DEFAULT_BACKUP_COUNT = 3
+
+
+def code_fingerprint(code: str) -> str:
+    """Whitespace-normalized sha256[:16] of a code snippet.
+
+    Same normalization as the external skill-distiller (strip lines, drop
+    blanks), so repeated snippets cluster across both systems without the
+    metrics log having to store the code text itself.
+    """
+    lines = [ln.strip() for ln in code.strip().splitlines()]
+    normalized = "\n".join(ln for ln in lines if ln)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
 
 
 def _utc_now_iso() -> str:
