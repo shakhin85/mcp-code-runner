@@ -1,7 +1,7 @@
 import asyncio
 
 from code_runner.executor import CodeExecutor, _ToolNamespace
-from code_runner.metrics import MetricsRecorder
+from code_runner.metrics import MetricsRecorder, code_fingerprint
 
 
 class _FakeText:
@@ -199,3 +199,32 @@ class TestRecorderNoneIsNoOp:
         )
         asyncio.run(ns.execute_sql(query="SELECT 1"))
         assert stats["tool_calls"] == 1
+
+
+class TestCodeFingerprint:
+    def test_event_carries_stable_sha(self, tmp_path):
+        rec = MetricsRecorder(tmp_path / "m.jsonl", stderr=False)
+        executor = CodeExecutor(_FakePool(), recorder=rec)
+        asyncio.run(executor.execute("x = 1\nprint(x)"))
+        asyncio.run(executor.execute("x = 1   \n\nprint(x)"))  # same code, other whitespace
+
+        events = rec.read(kind="execute_code")
+        assert len(events) == 2
+        shas = {ev["code_sha"] for ev in events}
+        assert len(shas) == 1, events
+        sha = shas.pop()
+        assert len(sha) == 16 and int(sha, 16) >= 0
+        assert events[0]["code_lines"] == 2
+        assert events[1]["code_lines"] == 3  # raw line count, normalization only in sha
+
+    def test_different_code_different_sha(self, tmp_path):
+        rec = MetricsRecorder(tmp_path / "m.jsonl", stderr=False)
+        executor = CodeExecutor(_FakePool(), recorder=rec)
+        asyncio.run(executor.execute("print('a')"))
+        asyncio.run(executor.execute("print('b')"))
+        events = rec.read(kind="execute_code")
+        assert events[0]["code_sha"] != events[1]["code_sha"]
+
+    def test_helper_matches_distiller_normalization(self):
+        assert code_fingerprint("a = 1\n  print(a)\n") == code_fingerprint("\na = 1\nprint(a)")
+        assert code_fingerprint("a = 1") != code_fingerprint("a = 2")
