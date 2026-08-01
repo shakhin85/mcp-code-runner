@@ -764,6 +764,9 @@ class CodeExecutor:
         # each other's SIGALRM state.
         self._exec_lock = asyncio.Lock()
         self._sessions: dict[str, _SessionState] = {}
+        # Per-call project pool (daemon mode). Выставляется только под
+        # _exec_lock — исполнение сериализовано, гонки нет.
+        self._extra_pool = None
 
     def _evict_expired_sessions(self) -> None:
         now = time.monotonic()
@@ -814,6 +817,22 @@ class CodeExecutor:
                 raw_cap=raw_cap,
                 pool=self.pool,
             )
+        # Project-level servers (daemon mode): only names the global pool
+        # doesn't already serve — global wins on collision.
+        extra = self._extra_pool
+        if extra is not None:
+            for server_name, session in extra.sessions.items():
+                py_name = server_name_to_py(server_name)
+                if py_name in proxies:
+                    continue
+                proxies[py_name] = _ToolNamespace(
+                    server_name, session, extra.tools.get(server_name, []),
+                    auto_limit=auto_limit,
+                    stats=stats,
+                    recorder=self.recorder,
+                    raw_cap=raw_cap,
+                    pool=extra,
+                )
         return proxies
 
     def _build_namespace(
@@ -1008,14 +1027,19 @@ class CodeExecutor:
         session_id: str | None = None,
         auto_limit: int = DEFAULT_AUTO_LIMIT,
         raw_cap: int = DEFAULT_RAW_CAP,
+        extra_pool=None,
     ) -> dict[str, Any]:
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
         # MCP stdio case.
         async with self._exec_lock:
-            return await self._execute_locked(
-                code, timeout, max_output_bytes, session_id, auto_limit, raw_cap
-            )
+            self._extra_pool = extra_pool
+            try:
+                return await self._execute_locked(
+                    code, timeout, max_output_bytes, session_id, auto_limit, raw_cap
+                )
+            finally:
+                self._extra_pool = None
 
     async def _execute_locked(
         self,

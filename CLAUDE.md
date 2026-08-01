@@ -14,6 +14,13 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
 - `workspace.py` — injected `open()`: writes confined to `~/.cache/code-runner/workspace/<session_id>/` (relative paths), reads may also reach absolute paths under `CODE_RUNNER_READ_ROOTS` minus a secret deny-list. Text modes default to UTF-8.
 - `skills.py` — discovers `~/.claude/code-runner-skills/<name>/`, exposes `skills.<name>.<fn>` proxy.
 
+## Deployment
+
+Боевой режим — общий HTTP-демон под systemd (socket :8030 → backend :8031,
+socket-activation + idle-stop), НЕ per-session stdio. Правки кода вступают
+после `systemctl --user restart code-runner-backend.service`. Полная схема,
+env и резолв проектных серверов через MCP roots: `docs/DAEMON.md`.
+
 ## Files and encoding
 
 The sandbox exists to keep raw tool output out of the model's context, not to make

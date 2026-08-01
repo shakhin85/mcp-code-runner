@@ -145,7 +145,12 @@ def load_server_configs(skip_servers: set[str] | None = None) -> dict[str, Serve
         with open(global_path, encoding="utf-8") as f:
             _parse_servers(json.load(f), skip, servers)
 
-    # 2. Project configs — only add servers not already present
+    # 2. Project configs — only add servers not already present.
+    # В daemon-режиме (общий HTTP-процесс) cwd-детект бессмыслен: проект
+    # определяется per-request через MCP roots, поэтому merge отключается.
+    if os.environ.get("CODE_RUNNER_NO_PROJECT_CONFIG"):
+        return servers
+
     for config_path in _get_project_config_paths():
         if config_path.exists():
             with open(config_path, encoding="utf-8") as f:
@@ -158,6 +163,28 @@ def load_server_configs(skip_servers: set[str] | None = None) -> dict[str, Serve
                     f"Added project-level servers from {config_path.name}: {sorted(added)}"
                 )
 
+    return servers
+
+
+def load_project_server_configs(
+    project_dir: Path,
+    skip_servers: set[str] | None = None,
+    exclude: set[str] | None = None,
+) -> dict[str, ServerConfig]:
+    """Servers from ONE project's configs only (.claude/settings.json + .mcp.json).
+
+    exclude: names already served by the global pool — a project-level
+    duplicate of a global server is ignored, global wins.
+    """
+    skip = (skip_servers or set()) | (exclude or set())
+    servers: dict[str, ServerConfig] = {}
+    for config_path in (
+        project_dir / ".claude" / "settings.json",
+        project_dir / ".mcp.json",
+    ):
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                _parse_servers(json.load(f), skip, servers)
     return servers
 
 

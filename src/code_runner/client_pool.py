@@ -30,10 +30,19 @@ class MCPClientPool:
         self.configs: dict[str, ServerConfig] = {}
         self._reconnect_locks: dict[str, asyncio.Lock] = {}
 
-    async def startup(self, skip_servers: set[str] | None = None) -> None:
-        """Connect to all configured MCP servers in parallel."""
+    async def startup(
+        self,
+        skip_servers: set[str] | None = None,
+        configs: dict[str, ServerConfig] | None = None,
+    ) -> None:
+        """Connect to all configured MCP servers in parallel.
+
+        configs: explicit server set (per-project pools in daemon mode);
+        default — read from ~/.claude.json + project configs.
+        """
         await self._exit_stack.__aenter__()
-        configs = load_server_configs(skip_servers)
+        if configs is None:
+            configs = load_server_configs(skip_servers)
 
         tasks = [
             self._safe_connect(name, cfg)

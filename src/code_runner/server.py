@@ -13,13 +13,18 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import Tool
 
+from urllib.parse import unquote, urlparse
+from weakref import WeakKeyDictionary
+
 from .client_pool import MCPClientPool
 from .executor import CodeExecutor
 from .metrics import recorder_from_env
+from .project_pools import ProjectPoolRegistry
 from .schema_gen import generate_server_overview, generate_stubs_for_server
 from .config_reader import server_name_to_py
 from .skills import SkillLoader, SkillSpec, SkillsNamespace, write_skill_files
@@ -61,17 +66,69 @@ async def lifespan(server: FastMCP):
     skills_ns = SkillsNamespace(loader.discover())
     executor = CodeExecutor(pool, recorder=recorder, skills=skills_ns)
 
+    # Daemon mode: проектные серверы поднимаются per-request через MCP roots,
+    # по пулу на проект. В stdio-режиме проект уже смержен в global pool.
+    project_pools = None
+    if os.environ.get("CODE_RUNNER_TRANSPORT") == "streamable-http":
+        project_pools = ProjectPoolRegistry(
+            global_names=set(pool.configs), skip_servers=SKIP_SERVERS
+        )
+
     try:
         yield {
             "pool": pool,
             "executor": executor,
             "skills_loader": loader,
+            "project_pools": project_pools,
         }
     finally:
+        if project_pools is not None:
+            await project_pools.shutdown()
         await pool.shutdown()
 
 
 mcp = FastMCP("code-runner", lifespan=lifespan)
+
+# client session -> resolved project dir (or None if roots недоступны).
+# Roots запрашиваются у клиента один раз на MCP-сессию.
+_session_roots: "WeakKeyDictionary[Any, Path | None]" = WeakKeyDictionary()
+
+
+async def _resolve_project_dir(ctx: Context) -> "Path | None":
+    session = ctx.session
+    if session in _session_roots:
+        return _session_roots[session]
+    project_dir: Path | None = None
+    try:
+        result = await ctx.session.list_roots()
+        for root in result.roots:
+            parsed = urlparse(str(root.uri))
+            if parsed.scheme == "file" and parsed.path:
+                candidate = Path(unquote(parsed.path))
+                if candidate.is_dir():
+                    project_dir = candidate
+                    break
+    except Exception as e:
+        logger.debug(f"list_roots unavailable: {e}")
+    _session_roots[session] = project_dir
+    return project_dir
+
+
+async def _project_pool(ctx: Context) -> "MCPClientPool | None":
+    """Per-project pool for this client session (daemon mode), else None."""
+    registry: ProjectPoolRegistry | None = ctx.request_context.lifespan_context.get(
+        "project_pools"
+    )
+    if registry is None:
+        return None
+    project_dir = await _resolve_project_dir(ctx)
+    if project_dir is None:
+        return None
+    try:
+        return await registry.get(project_dir)
+    except Exception as e:
+        logger.warning(f"Project pool unavailable for {project_dir}: {e}")
+        return None
 
 
 def _overview_logic(
@@ -134,6 +191,21 @@ def _format_skills_section(specs: dict[str, SkillSpec]) -> str:
     return "\n".join(lines)
 
 
+async def _merged_views(
+    ctx: Context, pool: MCPClientPool
+) -> tuple[dict[str, str], dict[str, list[Tool]]]:
+    """Global + project-pool views as COPIES (pool internals must stay clean)."""
+    py_name_map = dict(pool.py_name_map())
+    tools_by_server = dict(pool.get_all_tools())
+    extra = await _project_pool(ctx)
+    if extra is not None:
+        for server_name, tools in extra.get_all_tools().items():
+            tools_by_server.setdefault(server_name, tools)
+        for py_name, server_name in extra.py_name_map().items():
+            py_name_map.setdefault(py_name, server_name)
+    return py_name_map, tools_by_server
+
+
 @mcp.tool()
 async def list_available_tools(ctx: Context) -> str:
     """
@@ -141,8 +213,7 @@ async def list_available_tools(ctx: Context) -> str:
     Returns a brief overview. Use search_tools(query) to find specific tools with full signatures.
     """
     pool: MCPClientPool = ctx.request_context.lifespan_context["pool"]
-    py_name_map = pool.py_name_map()
-    tools_by_server = pool.get_all_tools()
+    py_name_map, tools_by_server = await _merged_views(ctx, pool)
 
     if not py_name_map:
         return "No MCP servers connected."
@@ -172,7 +243,8 @@ async def search_tools(query: str, ctx: Context) -> str:
                Examples: "sql query", "read file", "documentation"
     """
     pool: MCPClientPool = ctx.request_context.lifespan_context["pool"]
-    return _search_tools_logic(query, pool.get_all_tools(), pool.py_name_map())
+    py_name_map, tools_by_server = await _merged_views(ctx, pool)
+    return _search_tools_logic(query, tools_by_server, py_name_map)
 
 
 @mcp.tool()
@@ -231,6 +303,7 @@ async def execute_code(
         session_id=session_id,
         auto_limit=auto_limit,
         raw_cap=raw_cap,
+        extra_pool=await _project_pool(ctx),
     )
 
     lines = []
@@ -325,9 +398,13 @@ def main():
         sys.stdin.reconfigure(encoding="utf-8")
 
     # CODE_RUNNER_TRANSPORT=streamable-http поднимает HTTP-демон на
-    # FASTMCP_HOST/FASTMCP_PORT (читаются Settings самого FastMCP);
-    # по умолчанию — прежний per-session stdio.
+    # FASTMCP_HOST/FASTMCP_PORT; конструктор FastMCP перекрывает env-Settings
+    # своими дефолтами (host=127.0.0.1, port=8000), поэтому выставляем явно.
     transport = os.environ.get("CODE_RUNNER_TRANSPORT", "stdio")
+    if host := os.environ.get("FASTMCP_HOST"):
+        mcp.settings.host = host
+    if port := os.environ.get("FASTMCP_PORT"):
+        mcp.settings.port = int(port)
     mcp.run(transport=transport)
 
 
