@@ -309,12 +309,26 @@ async def save_skill(name: str, code: str, description: str, ctx: Context) -> st
     return f"Saved skill {name!r} to {target}"
 
 
+@mcp.tool()
+async def debug_roots(ctx: Context) -> str:
+    """TEMP: report MCP roots the client exposes (per-session project dir probe)."""
+    try:
+        result = await ctx.session.list_roots()
+        return json.dumps([str(r.uri) for r in result.roots])
+    except Exception as e:
+        return f"list_roots failed: {type(e).__name__}: {e}"
+
+
 def main():
     if sys.platform == "win32":
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stdin.reconfigure(encoding="utf-8")
 
-    mcp.run(transport="stdio")
+    # CODE_RUNNER_TRANSPORT=streamable-http поднимает HTTP-демон на
+    # FASTMCP_HOST/FASTMCP_PORT (читаются Settings самого FastMCP);
+    # по умолчанию — прежний per-session stdio.
+    transport = os.environ.get("CODE_RUNNER_TRANSPORT", "stdio")
+    mcp.run(transport=transport)
 
 
 if __name__ == "__main__":
