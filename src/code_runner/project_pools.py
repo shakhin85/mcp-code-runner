@@ -27,9 +27,13 @@ STARTUP_TIMEOUT = 60.0
 
 
 class _PoolHost:
-    """Owns one pool's lifecycle inside a dedicated task."""
+    """Owns one pool's lifecycle inside a dedicated task.
 
-    def __init__(self, project_dir: Path, configs: dict):
+    project_dir is a label for task name / logs; the daemon's global pool
+    passes the string "global" here.
+    """
+
+    def __init__(self, project_dir: Path | str, configs: dict):
         self.pool = MCPClientPool()
         self.project_dir = project_dir
         self._stop = asyncio.Event()

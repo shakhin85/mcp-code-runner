@@ -7,6 +7,7 @@ Exposes three tools to Claude:
   - execute_code          -> run Python code with MCP tool access
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -14,20 +15,19 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
+from weakref import WeakKeyDictionary
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import Tool
 
-from urllib.parse import unquote, urlparse
-from weakref import WeakKeyDictionary
-
 from .client_pool import MCPClientPool
+from .config_reader import load_server_configs, server_name_to_py
 from .executor import CodeExecutor
 from .metrics import recorder_from_env
-from .project_pools import ProjectPoolRegistry
+from .project_pools import STARTUP_TIMEOUT, ProjectPoolRegistry, _PoolHost
 from .schema_gen import generate_server_overview, generate_stubs_for_server
-from .config_reader import server_name_to_py
-from .skills import SkillLoader, SkillSpec, SkillsNamespace, write_skill_files
+from .skills import SkillLoader, SkillsNamespace, SkillSpec, write_skill_files
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -44,17 +44,10 @@ SKIP_SERVERS: set[str] = {"code-runner", "serena"} | {
 SKILLS_DIR = Path.home() / ".claude" / "code-runner-skills"
 
 
-@asynccontextmanager
-async def lifespan(server: FastMCP):
-    pool = MCPClientPool()
-    await pool.startup(skip_servers=SKIP_SERVERS)
-
-    connected = pool.connected_servers()
-    failed = pool.failed
-
-    logger.info(f"Connected: {connected}")
-    if failed:
-        logger.warning(f"Failed: {failed}")
+def _build_state(pool: MCPClientPool, project_pools) -> dict[str, Any]:
+    logger.info(f"Connected: {pool.connected_servers()}")
+    if pool.failed:
+        logger.warning(f"Failed: {pool.failed}")
 
     recorder = recorder_from_env()
     if recorder is not None:
@@ -65,25 +58,52 @@ async def lifespan(server: FastMCP):
     loader = SkillLoader(SKILLS_DIR)
     skills_ns = SkillsNamespace(loader.discover())
     executor = CodeExecutor(pool, recorder=recorder, skills=skills_ns)
+    return {
+        "pool": pool,
+        "executor": executor,
+        "skills_loader": loader,
+        "project_pools": project_pools,
+    }
 
-    # Daemon mode: проектные серверы поднимаются per-request через MCP roots,
-    # по пулу на проект. В stdio-режиме проект уже смержен в global pool.
-    project_pools = None
+
+# Daemon mode: FastMCP enters `lifespan` once per MCP session, not once per
+# process. Building the pools there spawned a full copy of every global server
+# per session (TasksMax exhaustion, zero evictions — each session had its own
+# registry). State is built once, the global pool hosted in a session-independent
+# task (anyio cancel scopes die with the first session's task otherwise), and
+# never torn down per-session: process exit kills the cgroup.
+_daemon_state: dict[str, Any] | None = None
+_daemon_lock = asyncio.Lock()
+
+
+async def _daemon_state_singleton() -> dict[str, Any]:
+    global _daemon_state
+    async with _daemon_lock:
+        if _daemon_state is None:
+            host = _PoolHost("global", load_server_configs(SKIP_SERVERS))
+            await asyncio.wait_for(host.ready.wait(), timeout=STARTUP_TIMEOUT)
+            registry = ProjectPoolRegistry(
+                global_names=set(host.pool.configs), skip_servers=SKIP_SERVERS
+            )
+            state = _build_state(host.pool, registry)
+            state["_pool_host"] = host
+            _daemon_state = state
+    return _daemon_state
+
+
+@asynccontextmanager
+async def lifespan(server: FastMCP):
     if os.environ.get("CODE_RUNNER_TRANSPORT") == "streamable-http":
-        project_pools = ProjectPoolRegistry(
-            global_names=set(pool.configs), skip_servers=SKIP_SERVERS
-        )
+        yield await _daemon_state_singleton()
+        return
 
+    # stdio: one lifespan per process owns the pool and tears it down.
+    # Проектные серверы уже смержены в global pool (project_pools не нужен).
+    pool = MCPClientPool()
+    await pool.startup(skip_servers=SKIP_SERVERS)
     try:
-        yield {
-            "pool": pool,
-            "executor": executor,
-            "skills_loader": loader,
-            "project_pools": project_pools,
-        }
+        yield _build_state(pool, None)
     finally:
-        if project_pools is not None:
-            await project_pools.shutdown()
         await pool.shutdown()
 
 
