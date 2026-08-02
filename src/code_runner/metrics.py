@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 from datetime import UTC, datetime
@@ -19,6 +20,88 @@ from typing import Any
 
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 DEFAULT_BACKUP_COUNT = 3
+
+# An exception header line: "ValueError: boom", "MCPToolError: ...". Hints are
+# appended after the header, and a traceback precedes it, so we scan every line
+# and keep the last match — that is the exception the user actually hit.
+_EXC_HEADER_RE = re.compile(
+    r"^([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception|Interrupt|Exit|Warning)): "
+)
+
+# Sandbox refusals never reach an exception class of their own — validate_code
+# raises a plain ValueError whose message is the whole signal. Mapping them to
+# named classes keeps "the sandbox said no" separable from "the code broke".
+_REFUSAL_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("import statements are not allowed", "BlockedImport"),
+    ("dunder attribute access is not allowed", "BlockedDunder"),
+    ("disallowed node", "BlockedConstruct"),
+    ("disallowed name", "BlockedConstruct"),
+    ("disallowed attribute root", "BlockedConstruct"),
+)
+
+
+def classify_error(error: str | None) -> str | None:
+    """Bucket an execute_code error string into a stable class name.
+
+    Recorded per event going forward, and applied on read to events written
+    before the field existed — so a question like "is the SyntaxError share
+    growing?" can be answered over the whole retained history, not just since
+    the last deploy.
+    """
+    if not error:
+        return None
+    text = error.strip()
+    if not text:
+        return None
+    low = text.lower()
+    for prefix, name in _REFUSAL_PREFIXES:
+        if low.startswith(prefix):
+            return name
+    if low.startswith("execution timed out") or "timed out after" in low:
+        return "Timeout"
+    if low.startswith("isolation error") or low.startswith("isolation worker died"):
+        return "IsolationError"
+    found = None
+    for line in text.splitlines():
+        m = _EXC_HEADER_RE.match(line.strip())
+        if m:
+            found = m.group(1)
+    if found:
+        return found
+    return "Other"
+
+
+def summarize_errors(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate execute_code events into a failure breakdown.
+
+    ``syntax_share`` is the routing signal behind this: writing code with
+    escaping is harder than issuing one direct tool call, so a rising share of
+    SyntaxError means the caller is being pushed into the sandbox for tasks too
+    small to earn it. The other classes are the error-UX backlog — a class that
+    grows is a missing HINT.
+    """
+    runs = [e for e in events if e.get("kind") == "execute_code"]
+    failures = [e for e in runs if e.get("success") is False]
+    by_class: dict[str, int] = {}
+    for ev in failures:
+        cls = ev.get("error_class") or classify_error(ev.get("error")) or "Other"
+        by_class[cls] = by_class.get(cls, 0) + 1
+    total = len(runs)
+    ordered = dict(sorted(by_class.items(), key=lambda kv: (-kv[1], kv[0])))
+    return {
+        "runs": total,
+        "failed": len(failures),
+        "fail_rate": round(len(failures) / total, 4) if total else 0.0,
+        "by_error_class": ordered,
+        "syntax_errors": by_class.get("SyntaxError", 0),
+        "syntax_share": (
+            round(by_class.get("SyntaxError", 0) / total, 4) if total else 0.0
+        ),
+        "window": {
+            "first_ts": runs[0].get("ts") if runs else None,
+            "last_ts": runs[-1].get("ts") if runs else None,
+        },
+    }
 
 
 def code_fingerprint(code: str) -> str:

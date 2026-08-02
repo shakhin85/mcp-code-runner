@@ -14,9 +14,10 @@ real session, and the parsed result returned. Everything else (pure compute,
 
 A fresh process per call is deliberate: ``RLIMIT_CPU`` is cumulative over a
 process's whole life, so a reused worker would eventually trip it on honest work.
-The default start method is ``spawn`` — never plain ``fork`` — so the child is a
-brand-new interpreter that never inherits the parent's in-memory MCP sessions or
-credentials (``forkserver`` is opt-in and reintroduces COW inheritance).
+The start method is never plain ``fork`` — that would hand the child the parent's
+heap (live MCP sessions, credentials) via copy-on-write. ``forkserver`` (default)
+and ``spawn`` both give an ancestor that was exec'd fresh, so neither inherits it;
+see the start-method note in ``executor`` for the measured cost of each.
 """
 
 from __future__ import annotations
@@ -29,8 +30,10 @@ import json as _json
 import os
 import pickle
 import resource
+from pathlib import Path
 from typing import Any
 
+from . import prelude as _prelude
 from .executor import (
     _JSON_WRAPPED,
     _RESULT_SENTINEL,
@@ -38,7 +41,11 @@ from .executor import (
     _SAFE_MODULES_WRAPPED,
     SAFE_BUILTINS,
     _format_user_traceback,
+    _limit_error_hint,
+    _name_error_hint,
+    _signature_hint,
 )
+from .skills import SkillLoader, SkillsNamespace
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
 # Env vars the child keeps; everything else (API keys, tokens, connection
@@ -184,6 +191,18 @@ def _build_child_namespace(payload: dict, rpc: _RpcBridge) -> tuple[dict, set[st
     for spec in payload.get("servers", []):
         namespace[spec["py_name"]] = _RemoteProxy(spec["py_name"], spec["tools"], rpc)
 
+    # Skills are trusted local code, so they load here exactly as in-process:
+    # from disk, with full builtins, with `open` pointed at this session's
+    # workspace. Without this the child would silently lack skills.* and the
+    # prelude aliases (fg_query, md_table, ...) that user code relies on.
+    skills_dir = payload.get("skills_dir")
+    if skills_dir:
+        with contextlib.suppress(Exception):
+            skills_ns = SkillsNamespace(SkillLoader(Path(skills_dir)).discover())
+            skills_ns.bind("open", namespace["open"])
+            namespace["skills"] = skills_ns
+            namespace.update(_prelude.build(skills_ns))
+
     framework_names = set(namespace.keys())
 
     persisted_blob = payload.get("user_vars")
@@ -257,10 +276,18 @@ async def _run(payload: dict, rpc: _RpcBridge) -> dict:
             "user_vars": _extract_picklable_vars(namespace, framework_names),
         }
     except BaseException as e:
+        # Same HINT set as the in-process path — they need the live exception,
+        # which only exists here. The str-result hint is the exception: it needs
+        # the parent's per-run stats, so the parent appends that one.
         return {
             "success": False,
             "output": "".join(output_lines),
-            "error": _format_user_traceback(e),
+            "error": (
+                _format_user_traceback(e)
+                + _signature_hint(e, namespace.get("skills"))
+                + _name_error_hint(e, namespace)
+                + _limit_error_hint(e)
+            ),
             "user_vars": None,
         }
 

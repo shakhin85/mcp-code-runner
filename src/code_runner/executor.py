@@ -42,7 +42,7 @@ from mcp.types import Tool
 
 from . import prelude as _prelude
 from .config_reader import server_name_to_py
-from .metrics import MetricsRecorder, code_fingerprint
+from .metrics import MetricsRecorder, classify_error, code_fingerprint
 from .skills import SkillsNamespace
 from .sql_limit import inject_limit
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
@@ -217,22 +217,28 @@ DEFAULT_WORKSPACE_ROOT = Path.home() / ".cache" / "code-runner" / "workspace"
 # off-main-thread CPU loop takes the server (and every live MCP session's
 # credentials) with it. When enabled, each call runs in a fresh, rlimited,
 # env-scrubbed child process instead; MCP calls are proxied back to the parent.
-# Opt-in for now (behaviour/latency change) via CODE_RUNNER_ISOLATION=subprocess.
-_ISOLATION_DEFAULT = os.environ.get("CODE_RUNNER_ISOLATION", "inprocess").strip().lower()
+# Default since the child reached feature parity (skills/prelude) and the
+# forkserver start method brought per-call cost to ~14 ms; set
+# CODE_RUNNER_ISOLATION=inprocess to run in the server's own interpreter.
+_ISOLATION_DEFAULT = os.environ.get("CODE_RUNNER_ISOLATION", "subprocess").strip().lower()
 _MEM_LIMIT_MB_DEFAULT = int(os.environ.get("CODE_RUNNER_MEM_LIMIT_MB", "2048"))
 _FSIZE_LIMIT_MB_DEFAULT = int(os.environ.get("CODE_RUNNER_FSIZE_LIMIT_MB", "64"))
 
 # rlimits live in the `resource` module (POSIX only), so isolation is POSIX-only.
 _SUBPROCESS_AVAILABLE = sys.platform != "win32"
 
-# Start method matters for the security boundary, not just speed. `spawn` gives a
-# brand-new interpreter: no copy-on-write inheritance of the parent's heap (live
-# MCP sessions, credentials), and the parent's fds are CLOEXEC so they don't leak
-# either. `forkserver` is faster but the forkserver is born at first use — by then
-# the server already holds credentials in memory, which the child inherits via COW
-# and an escaped child could read out of /proc/self/mem. So `spawn` is the default;
-# forkserver/fork are opt-in for anyone who accepts that trade for latency.
-_START_METHOD_DEFAULT = os.environ.get("CODE_RUNNER_START_METHOD", "spawn").strip().lower()
+# Start method matters for the security boundary, not just speed. Plain `fork`
+# is never acceptable: the child would inherit the parent's heap — live MCP
+# sessions and credentials — readable via /proc/self/mem after an escape.
+# `forkserver` does NOT: its server process is fork+exec'd into a brand-new
+# interpreter, so children inherit only what that clean ancestor preloaded.
+# Measured on this repo (probe: `fork` sees a parent-only string, `forkserver`
+# and `spawn` do not): spawn 714 ms/call, forkserver 14 ms/call. Same boundary,
+# 50× cheaper — so forkserver is the default and spawn stays available for hosts
+# where it is unavailable or distrusted.
+_START_METHOD_DEFAULT = (
+    os.environ.get("CODE_RUNNER_START_METHOD", "forkserver").strip().lower()
+)
 _AVAILABLE_START_METHODS = multiprocessing.get_all_start_methods()
 if _START_METHOD_DEFAULT in _AVAILABLE_START_METHODS:
     _MP_START_METHOD = _START_METHOD_DEFAULT
@@ -240,6 +246,15 @@ elif "spawn" in _AVAILABLE_START_METHODS:
     _MP_START_METHOD = "spawn"
 else:
     _MP_START_METHOD = _AVAILABLE_START_METHODS[0]
+if _MP_START_METHOD == "forkserver":
+    # Preload the worker (and with it this module) in the clean ancestor, so
+    # each child forks with the imports already done. Explicit, so the default
+    # `__main__` preload — which would import and construct the whole MCP
+    # server in the ancestor — never runs.
+    with contextlib.suppress(Exception):
+        multiprocessing.get_context("forkserver").set_forkserver_preload(
+            ["code_runner.subprocess_worker"]
+        )
 _EOF = object()  # sentinel: the worker pipe closed (child killed or crashed)
 
 # Server-name prefix → sqlglot dialect for auto-LIMIT injection.
@@ -532,11 +547,13 @@ _STR_RESULT_HINT = (
 )
 
 
-def _str_result_hint(exc: BaseException, stats: dict[str, int]) -> str:
+def _str_result_hint(exc: "BaseException | str", stats: dict[str, int]) -> str:
     """Append a footgun hint iff a subscript error coincides with a str tool result.
 
     Fires only when both signals are present in the same run, so it never adds
-    noise to an unrelated TypeError.
+    noise to an unrelated TypeError. Accepts an already-formatted error string
+    too: under subprocess isolation the exception dies with the child, but the
+    parent holds the stats, so this is the one hint applied on the parent side.
     """
     if stats.get("str_results", 0) <= 0:
         return ""
@@ -1069,6 +1086,10 @@ class CodeExecutor:
             "code": code,
             "session_id": session_id,
             "workspace_root": str(self.workspace.root) if self.workspace is not None else None,
+            # Skill callables don't pickle, so the child reloads them from the
+            # same directory this namespace came from — which also means a skill
+            # added by save_skill is live on the next call, without a restart.
+            "skills_dir": str(self.skills.root) if getattr(self.skills, "root", None) else None,
             "servers": servers,
             "user_vars": persisted,
             "limits": {
@@ -1140,7 +1161,10 @@ class CodeExecutor:
                 st.user_vars = result["user_vars"]
                 st.last_access = time.monotonic()
 
-        return bool(result.get("success")), result.get("output") or "", result.get("error")
+        error = result.get("error")
+        if error:
+            error += _str_result_hint(error, stats)
+        return bool(result.get("success")), result.get("output") or "", error
 
     async def execute(
         self,
@@ -1206,6 +1230,7 @@ class CodeExecutor:
                         "code_sha": code_sha,
                         "code_lines": code_lines,
                         "error": error,
+                        "error_class": classify_error(error),
                     })
                 except Exception:
                     pass

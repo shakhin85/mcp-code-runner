@@ -24,7 +24,7 @@ from mcp.types import Tool
 from .client_pool import MCPClientPool
 from .config_reader import load_server_configs, server_name_to_py
 from .executor import CodeExecutor
-from .metrics import recorder_from_env
+from .metrics import recorder_from_env, summarize_errors
 from .project_pools import STARTUP_TIMEOUT, ProjectPoolRegistry, _PoolHost
 from .schema_gen import generate_server_overview, generate_stubs_for_server
 from .skills import SkillLoader, SkillsNamespace, SkillSpec, write_skill_files
@@ -348,6 +348,7 @@ async def get_metrics(
     server: str | None = None,
     kind: str | None = None,
     limit: int = 100,
+    summary: bool = False,
 ) -> str:
     """
     Return recent code-runner metrics events as a JSON list (most recent last).
@@ -365,6 +366,13 @@ async def get_metrics(
         server: Filter tool_call events to a specific server name (e.g. "mssql").
         kind: "tool_call" or "execute_code". Omit for both.
         limit: Max events (default 100). Oldest trimmed first.
+        summary: Return a failure breakdown of execute_code runs instead of the
+            events themselves: runs/failed/fail_rate, counts per error class
+            (SyntaxError, BlockedImport, NameError, Timeout, ...) and
+            syntax_share. Pass a wide `since` and a large `limit` — the
+            aggregate is what comes back, not the events. A rising
+            syntax_share means calls are being routed into the sandbox that
+            were small enough to be direct tool calls.
 
     Returns JSON string. Empty list if no events match or metrics are disabled.
     """
@@ -376,6 +384,10 @@ async def get_metrics(
     events = executor.recorder.read(
         since=since, server=server, kind=kind, limit=limit
     )
+    if summary:
+        return json.dumps(
+            summarize_errors(events), ensure_ascii=False, default=str, indent=2
+        )
     return json.dumps(events, ensure_ascii=False, default=str, indent=2)
 
 

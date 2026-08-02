@@ -1,4 +1,5 @@
 import asyncio
+import pickle
 import sys
 import time
 
@@ -15,6 +16,19 @@ from code_runner.executor import (
     _ToolNamespace,
     validate_code,
 )
+
+
+def persisted_vars(executor, session_id):
+    """The session's persisted user vars as a dict, whichever mode ran them.
+
+    In-process keeps live objects; the subprocess path can only carry picklable
+    ones and stores them as a blob. The property tests care about — what does and
+    doesn't survive into persistence — is the same either way.
+    """
+    stored = executor._sessions[session_id].user_vars
+    if isinstance(stored, (bytes, bytearray)):
+        return pickle.loads(bytes(stored))
+    return stored
 
 
 class _FakeText:
@@ -427,13 +441,54 @@ class TestSubprocessIsolation:
         assert result["success"] is True, result["error"]
         assert "hi" in result["output"]
 
-    def test_inprocess_still_default(self):
-        # The behaviour change is opt-in: a default executor stays in-process.
+    def test_subprocess_is_the_default(self):
+        # Containment is the default: an executor built without arguments runs
+        # user code in a child, not in the server's own interpreter.
         class FakePool:
             sessions = {}
             tools = {}
         ex = CodeExecutor(FakePool())
-        assert ex._isolation == "inprocess"
+        assert ex._isolation == "subprocess"
+
+    def test_start_method_never_plain_fork(self):
+        # fork would hand the child the parent's heap — live MCP sessions and
+        # credentials — via copy-on-write. spawn/forkserver both exec fresh.
+        from code_runner.executor import _MP_START_METHOD
+        assert _MP_START_METHOD in ("forkserver", "spawn")
+
+    def test_skills_reach_the_child(self, tmp_path):
+        from pathlib import Path
+
+        from code_runner.skills import SkillLoader, SkillsNamespace
+        from code_runner.workspace import WorkspaceManager
+        fixture_dir = Path(__file__).parent / "skills_fixtures"
+        ns = SkillsNamespace(SkillLoader(fixture_dir).discover())
+
+        class FakePool:
+            sessions = {}
+            tools = {}
+        ex = CodeExecutor(
+            FakePool(),
+            skills=ns,
+            workspace=WorkspaceManager(tmp_path),
+            isolation="subprocess",
+            mem_limit_mb=1024,
+        )
+        result = asyncio.run(ex.execute(
+            "rows = [{'a': 1}, {'a': 2}]\n"
+            "print(skills.sample_csv.write_csv(rows, 'out.csv'))",
+            session_id="sk",
+        ))
+        assert result["success"] is True, result["error"]
+        assert "2" in result["output"]
+
+    def test_name_error_hint_survives_the_pipe(self):
+        # The HINT set needs the live exception, which dies with the child —
+        # so the child must apply them before the error crosses back.
+        ex = self._executor()
+        result = asyncio.run(ex.execute("totl = 1\nprint(total)"))
+        assert result["success"] is False
+        assert "totl" in (result["error"] or "")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="SIGALRM is POSIX-only")
@@ -879,13 +934,13 @@ class TestPersistentNamespace:
     def test_framework_names_not_persisted(self, executor):
         """json/re/datetime/asyncio and MCP server objects must not leak into user_vars."""
         asyncio.run(executor.execute("x = 1", session_id="s"))
-        state = executor._sessions["s"]
-        assert "x" in state.user_vars
-        assert "json" not in state.user_vars
-        assert "re" not in state.user_vars
-        assert "datetime" not in state.user_vars
-        assert "asyncio" not in state.user_vars
-        assert "print" not in state.user_vars
+        kept = persisted_vars(executor, "s")
+        assert "x" in kept
+        assert "json" not in kept
+        assert "re" not in kept
+        assert "datetime" not in kept
+        assert "asyncio" not in kept
+        assert "print" not in kept
 
     def test_lru_eviction_over_max_sessions(self, executor):
         from code_runner.executor import MAX_SESSIONS
@@ -1024,8 +1079,7 @@ class TestSkillsIntegration:
         ex = self._make_executor(tmp_path, fixture_dir)
         asyncio.run(ex.execute("x = 1", session_id="s4"))
         # skills must not leak into the persisted user_vars
-        state = ex._sessions["s4"]
-        assert "skills" not in state.user_vars
+        assert "skills" not in persisted_vars(ex, "s4")
 
     def test_skill_open_writes_into_workspace_via_bind(self, tmp_path, fixture_dir):
         # Re-verify the sample_csv path now relies on bind() rather than

@@ -178,10 +178,17 @@ class SkillsNamespace:
     the per-session workspace-bound safe_open before each user run.
     """
 
-    __slots__ = ("_proxies", "_shared_builtins")
+    __slots__ = ("_proxies", "_shared_builtins", "root")
 
     def __init__(self, specs: dict[str, SkillSpec]) -> None:
         self._proxies: dict[str, Any] = {}
+        # Where these skills were loaded from. Skill callables can't be pickled
+        # across to an isolation child, so the child reloads from this path —
+        # carrying it on the namespace means a caller can't wire up skills and
+        # silently lose them under subprocess isolation.
+        self.root: Path | None = next(
+            (spec.path.parent for spec in specs.values()), None
+        )
         # Shared so a single bind() reaches every skill at lookup time.
         self._shared_builtins: dict[str, Any] = dict(_builtins.__dict__)
         for name, spec in specs.items():

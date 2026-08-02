@@ -1,7 +1,7 @@
 import json
 from decimal import Decimal
 
-from code_runner.metrics import MetricsRecorder
+from code_runner.metrics import MetricsRecorder, classify_error, summarize_errors
 
 
 class TestMetricsRecorder:
@@ -123,3 +123,85 @@ class TestMetricsRecorder:
         blocker.write_text("x")
         rec = MetricsRecorder(blocker / "metrics.jsonl", stderr=False)
         rec.record({"kind": "test"})
+
+
+class TestErrorClassification:
+    def test_exception_header_after_traceback(self):
+        error = (
+            "Traceback (most recent call last):\n"
+            '  File "<user>", line 2, in <module>\n'
+            "NameError: name 'total' is not defined"
+        )
+        assert classify_error(error) == "NameError"
+
+    def test_hint_after_the_header_does_not_win(self):
+        # HINTs are appended after the exception line; the class is still the
+        # exception the caller hit, not whatever the hint text mentions.
+        error = (
+            "TypeError: string indices must be integers\n\n"
+            "HINT: a tool result this run was returned as a STRING"
+        )
+        assert classify_error(error) == "TypeError"
+
+    def test_sandbox_refusals_get_their_own_classes(self):
+        assert classify_error("import statements are not allowed: os — …") == "BlockedImport"
+        assert classify_error("dunder attribute access is not allowed: __class__") == (
+            "BlockedDunder"
+        )
+        assert classify_error("disallowed node: Exec") == "BlockedConstruct"
+
+    def test_syntax_error_from_validation(self):
+        assert classify_error("SyntaxError: invalid syntax (<unknown>, line 3)") == (
+            "SyntaxError"
+        )
+
+    def test_timeout_and_isolation(self):
+        assert classify_error("Execution timed out after 60s") == "Timeout"
+        assert classify_error("isolation worker died before returning a result") == (
+            "IsolationError"
+        )
+
+    def test_none_and_unrecognized(self):
+        assert classify_error(None) is None
+        assert classify_error("") is None
+        assert classify_error("something odd happened") == "Other"
+
+
+class TestSummarizeErrors:
+    def _run(self, success, error=None, error_class=None, ts="2026-08-02T10:00:00Z"):
+        ev = {"kind": "execute_code", "success": success, "error": error, "ts": ts}
+        if error_class is not None:
+            ev["error_class"] = error_class
+        return ev
+
+    def test_counts_and_shares(self):
+        events = [
+            self._run(True),
+            self._run(True),
+            self._run(False, "SyntaxError: invalid syntax", "SyntaxError"),
+            self._run(False, "NameError: name 'x' is not defined", "NameError"),
+        ]
+        out = summarize_errors(events)
+        assert out["runs"] == 4
+        assert out["failed"] == 2
+        assert out["fail_rate"] == 0.5
+        assert out["by_error_class"] == {"NameError": 1, "SyntaxError": 1}
+        assert out["syntax_share"] == 0.25
+
+    def test_classifies_events_written_before_the_field_existed(self):
+        # The point of the summary is answering "is SyntaxError growing?" over
+        # retained history, so events with no error_class must still bucket.
+        out = summarize_errors([self._run(False, "SyntaxError: invalid syntax")])
+        assert out["by_error_class"] == {"SyntaxError": 1}
+
+    def test_ignores_tool_call_events(self):
+        events = [{"kind": "tool_call", "success": False, "error": "boom"}, self._run(True)]
+        out = summarize_errors(events)
+        assert out["runs"] == 1
+        assert out["failed"] == 0
+
+    def test_empty_input(self):
+        out = summarize_errors([])
+        assert out["runs"] == 0
+        assert out["fail_rate"] == 0.0
+        assert out["by_error_class"] == {}

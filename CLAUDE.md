@@ -10,7 +10,11 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
 - `config_reader.py` — reads `~/.claude.json`, project `.claude/settings.json`, project `.mcp.json`. Detects project dir via `CLAUDE_PROJECT_DIR` or `/proc` walk.
 - `schema_gen.py` — JSON-schema → Python stub strings for `search_tools`.
 - `sql_limit.py` — sqlglot-based auto-LIMIT/TOP injection for bare SELECTs.
-- `metrics.py` — JSONL recorder for `tool_call` and `execute_code` events.
+- `metrics.py` — JSONL recorder for `tool_call` and `execute_code` events, plus
+  `classify_error` / `summarize_errors` behind `get_metrics(summary=True)`: a failure
+  breakdown by error class. A class that grows is a missing HINT; a growing
+  `syntax_share` means calls are being routed here that should have been direct
+  tool calls (7d baseline as of 2026-08-02: 274/1457 failed, SyntaxError share 0.0%).
 - `workspace.py` — injected `open()`: writes confined to `~/.cache/code-runner/workspace/<session_id>/` (relative paths), reads may also reach absolute paths under `CODE_RUNNER_READ_ROOTS` minus a secret deny-list. Text modes default to UTF-8.
 - `skills.py` — discovers `~/.claude/code-runner-skills/<name>/`, exposes `skills.<name>.<fn>` proxy.
 
@@ -55,12 +59,13 @@ sandbox stops being a matter of faith.
 - `uv run code-runner` — start server (stdio transport)
 - `CODE_RUNNER_METRICS=0` disables the JSONL metrics recorder (default: enabled, writes to `~/.cache/code-runner/metrics.jsonl`)
 - `CODE_RUNNER_READ_ROOTS=/a:/b` overrides the read-only roots (default `~/projects`)
-- `CODE_RUNNER_ISOLATION=subprocess` runs each `execute_code` call in a fresh, rlimited
-  child process instead of the server's own interpreter (default `inprocess`). See Security.
+- `CODE_RUNNER_ISOLATION=inprocess` runs `execute_code` in the server's own interpreter;
+  the default is `subprocess` — a fresh, rlimited child per call. See Security.
 - `CODE_RUNNER_MEM_LIMIT_MB` / `CODE_RUNNER_FSIZE_LIMIT_MB` — child `RLIMIT_AS` / `RLIMIT_FSIZE`
   caps under subprocess isolation (defaults 2048 / 64 MB)
-- `CODE_RUNNER_START_METHOD` — child start method (default `spawn`; `forkserver` is faster but
-  reintroduces copy-on-write memory inheritance from the parent, so it's opt-in)
+- `CODE_RUNNER_START_METHOD` — child start method (default `forkserver`, ~14 ms/call;
+  `spawn` is the same boundary at ~714 ms/call. Never plain `fork` — that one *does*
+  inherit the parent's heap)
 
 ## Security
 
@@ -74,11 +79,14 @@ sandbox stops being a matter of faith.
   is wrapped in a `_RestrictedModule` that refuses module-typed attributes. The exception
   field is truncated (`MAX_ERROR_BYTES`) like the output, so a raised error can't be a
   context bomb.
-- **Subprocess isolation** (`CODE_RUNNER_ISOLATION=subprocess`, opt-in) is the real
+- **Subprocess isolation** (default; `CODE_RUNNER_ISOLATION=inprocess` opts out) is the real
   containment: user code runs in a per-call child with `RLIMIT_AS`/`RLIMIT_CPU`/`RLIMIT_FSIZE`
   and a scrubbed environment; MCP calls are proxied back to the parent (live sessions never
   reach the child). An escape, OOM, or CPU loop is confined to a killable process, not the
   server. Persisted session vars must be picklable to cross the process boundary.
+  The child is at feature parity with the in-process path — skills, prelude aliases,
+  workspace `open()`, and the error HINTs all work there; only the str-result HINT is
+  applied parent-side, since it needs the run's tool-call stats.
 - Skills run with full builtins (trusted local code), user code in `execute_code` does not
 
 ## Opt-in features
