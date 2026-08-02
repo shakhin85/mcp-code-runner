@@ -85,6 +85,82 @@ def test_non_transport_error_propagates_without_reconnect():
     assert bad.calls == 1  # no retry
 
 
+def test_reconnect_closes_stale_transport():
+    """Регрессия 02.08.2026: reconnect не закрывал старый транспорт.
+
+    Стек оставляли на shutdown() всего пула, поэтому в вечном демоне каждый
+    reconnect навсегда добавлял живой stdio-процесс: 1038 проц. / 47.8 GiB
+    за 8.6 часов. Хост обязан закрыть свой стек при остановке."""
+    closed: list[str] = []
+
+    def opener_for(tag, session):
+        async def open_(stack):
+            async def _close():
+                closed.append(tag)
+
+            stack.push_async_callback(_close)
+            return session, []
+
+        return open_
+
+    async def scenario():
+        pool = MCPClientPool()
+        cfg = ServerConfig(name="srv", transport="stdio", command="x")
+        openers = iter([
+            opener_for("first", _Session(payload="one")),
+            opener_for("second", _Session(payload="two")),
+        ])
+        pool._stdio_opener = lambda _cfg: next(openers)  # type: ignore[assignment]
+
+        await pool._connect("srv", cfg)
+        assert closed == [], "живой транспорт не должен закрываться"
+
+        await pool._reconnect("srv")
+        assert closed == ["first"], "старый транспорт обязан закрыться при reconnect"
+
+        await pool.shutdown()
+        assert closed == ["first", "second"], "shutdown закрывает текущий транспорт"
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_survives_a_cancelled_host():
+    """Отменённый хост не должен срывать остановку остальных.
+
+    `await task` на отменённой задаче поднимает CancelledError — это
+    BaseException, `except Exception` его не ловит, и цикл shutdown() оборвался
+    бы на первом же таком хосте, оставив остальные транспорты жить."""
+    closed: list[str] = []
+
+    def opener_for(tag):
+        async def open_(stack):
+            async def _close():
+                closed.append(tag)
+
+            stack.push_async_callback(_close)
+            return _Session(), []
+
+        return open_
+
+    async def scenario():
+        pool = MCPClientPool()
+        for tag in ("a", "b"):
+            cfg = ServerConfig(name=tag, transport="stdio", command="x")
+            pool._stdio_opener = lambda _cfg, t=tag: opener_for(t)  # type: ignore[assignment]
+            await pool._connect(tag, cfg)
+
+        pool._hosts["a"]._task.cancel()
+        await asyncio.sleep(0)
+
+        # До фикса stop() поднимал бы здесь CancelledError отменённого хоста
+        # и shutdown() не дошёл бы до 'b'.
+        await pool.shutdown()
+        assert sorted(closed) == ["a", "b"], f"закрыты не все транспорты: {closed}"
+        assert pool._hosts == {}
+
+    asyncio.run(scenario())
+
+
 def test_reraises_when_reconnect_still_fails():
     dead = _Session(fail_with=RuntimeError("connection reset by peer"))
     still_dead = _Session(fail_with=RuntimeError("connection reset by peer"))

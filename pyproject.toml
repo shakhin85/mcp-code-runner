@@ -23,7 +23,19 @@ packages = ["src/code_runner"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.2",
+    "ruff>=0.16.1",
 ]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# RUF001/002/003 не включаем: комментарии и докстроки здесь по-русски, и правило
+# про "ambiguous unicode" помечает всю кириллицу. BLE001 тоже вне набора —
+# в супервизорах (_ServerHost, _PoolHost, _safe_connect) поймать всё и отдать
+# ошибку владельцу это намеренный контракт, а не небрежность.
 
 [tool.pytest.ini_options]
 tmp_path_retention_policy = "none"

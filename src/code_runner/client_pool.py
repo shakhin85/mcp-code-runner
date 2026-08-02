@@ -17,11 +17,78 @@ from .config_reader import ServerConfig, load_server_configs, server_name_to_py
 logger = logging.getLogger(__name__)
 
 CONNECTION_TIMEOUT = 30  # seconds per server
+SHUTDOWN_TIMEOUT = 15  # seconds to wait for one server host to close
+
+
+class _ServerHost:
+    """Owns one server's transport inside a dedicated task.
+
+    anyio cancel-scopes принадлежат задаче, в которой были открыты, поэтому
+    стек обязан закрываться в той же задаче. Прежняя версия обходила это тем,
+    что не закрывала стек при reconnect вовсе, оставляя его на shutdown() пула.
+    В stdio-режиме это было незаметно (пул умирал вместе с сессией), но в
+    вечном демоне каждый reconnect навсегда оставлял живой stdio-процесс:
+    1038 процессов / 47.8 GiB за 8.6 часов (02.08.2026). Тот же паттерн уже
+    применён уровнем выше — `_PoolHost` в project_pools.py.
+    """
+
+    def __init__(self, name: str, opener):
+        self.name = name
+        self.session: ClientSession | None = None
+        self.tools: list[Tool] = []
+        self.error: BaseException | None = None
+        self.ready = asyncio.Event()
+        self._stop = asyncio.Event()
+        self._task = asyncio.create_task(self._run(opener), name=f"mcp-server:{name}")
+
+    async def _run(self, opener) -> None:
+        stack = AsyncExitStack()
+        await stack.__aenter__()
+        try:
+            self.session, self.tools = await opener(stack)
+        except asyncio.CancelledError as e:
+            # Отмену закрываем и пробрасываем: проглотить её значит превратить
+            # снятие задачи в тихое «сервер не подключился».
+            self.error = e
+            await stack.aclose()
+            self.ready.set()
+            raise
+        except Exception as e:  # noqa: BLE001 — ошибку подъёма отдаём владельцу
+            self.error = e
+            await stack.aclose()
+            self.ready.set()
+            return
+        self.ready.set()
+        try:
+            await self._stop.wait()
+        finally:
+            await stack.aclose()
+
+    async def stop(self) -> None:
+        """Signal the host task to close its stack and wait for it.
+
+        Через `asyncio.wait`, а не `await task`: ожидание не должно
+        перевыбрасывать исключение задачи. Отменённый хост поднял бы
+        CancelledError (это BaseException, `except Exception` его не ловит) и
+        оборвал бы цикл в shutdown(), оставив остальные хосты неостановленными.
+        По таймауту задачу не отменяем — пусть дозакрывается в фоне, иначе
+        процесс снова осиротеет.
+        """
+        self._stop.set()
+        done, _ = await asyncio.wait({self._task}, timeout=SHUTDOWN_TIMEOUT)
+        if not done:
+            logger.warning(
+                f"Server host '{self.name}' did not close within {SHUTDOWN_TIMEOUT}s"
+            )
+            return
+        exc = None if self._task.cancelled() else self._task.exception()
+        if exc is not None:
+            logger.warning(f"Server host stop error for '{self.name}': {exc}")
 
 
 class MCPClientPool:
     def __init__(self):
-        self._exit_stack = AsyncExitStack()
+        self._hosts: dict[str, _ServerHost] = {}
         self.sessions: dict[str, ClientSession] = {}
         self.tools: dict[str, list[Tool]] = {}
         self.failed: dict[str, str] = {}
@@ -40,7 +107,6 @@ class MCPClientPool:
         configs: explicit server set (per-project pools in daemon mode);
         default — read from ~/.claude.json + project configs.
         """
-        await self._exit_stack.__aenter__()
         if configs is None:
             configs = load_server_configs(skip_servers)
 
@@ -63,43 +129,50 @@ class MCPClientPool:
             logger.warning(f"Failed to connect to '{name}': {e}")
 
     async def _connect(self, name: str, cfg: ServerConfig) -> None:
+        """Start a host task for this server and publish its session.
+
+        Транспорт открывается внутри задачи хоста — только так его можно
+        потом закрыть (см. _ServerHost). Любой срыв ожидания, включая таймаут
+        из _safe_connect, обязан погасить хост, иначе процесс осиротеет.
+        """
         self.configs[name] = cfg
-        if cfg.transport == "http":
-            await self._connect_http(name, cfg)
-        else:
-            await self._connect_stdio(name, cfg)
-
-    async def _connect_stdio(self, name: str, cfg: ServerConfig) -> None:
-        merged_env = {**os.environ, **cfg.env}
-        params = StdioServerParameters(
-            command=cfg.command,
-            args=cfg.args,
-            env=merged_env,
+        opener = (
+            self._http_opener(cfg)
+            if cfg.transport == "http"
+            else self._stdio_opener(cfg)
         )
-
-        stack = AsyncExitStack()
-        await stack.__aenter__()
-
+        host = _ServerHost(name, opener)
         try:
+            await host.ready.wait()
+        except BaseException:
+            await host.stop()
+            raise
+        if host.error is not None:
+            await host.stop()
+            raise host.error
+
+        self._hosts[name] = host
+        self.sessions[name] = host.session
+        self.tools[name] = host.tools
+
+    def _stdio_opener(self, cfg: ServerConfig):
+        async def open_(stack: AsyncExitStack):
+            merged_env = {**os.environ, **cfg.env}
+            params = StdioServerParameters(
+                command=cfg.command,
+                args=cfg.args,
+                env=merged_env,
+            )
             read, write = await stack.enter_async_context(stdio_client(params))
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
-
             result = await session.list_tools()
-            self.sessions[name] = session
-            self.tools[name] = result.tools
+            return session, result.tools
 
-            self._exit_stack.push_async_callback(stack.aclose)
-        except BaseException:
-            await stack.aclose()
-            raise
+        return open_
 
-    async def _connect_http(self, name: str, cfg: ServerConfig) -> None:
-        """Connect to HTTP/SSE MCP server using an isolated exit stack."""
-        stack = AsyncExitStack()
-        await stack.__aenter__()
-
-        try:
+    def _http_opener(self, cfg: ServerConfig):
+        async def open_(stack: AsyncExitStack):
             try:
                 from mcp.client.streamable_http import streamablehttp_client
 
@@ -115,15 +188,10 @@ class MCPClientPool:
 
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
-
             result = await session.list_tools()
-            self.sessions[name] = session
-            self.tools[name] = result.tools
+            return session, result.tools
 
-            self._exit_stack.push_async_callback(stack.aclose)
-        except BaseException:
-            await stack.aclose()
-            raise
+        return open_
 
     # Substrings that mark a dead transport/session (vs. a legit tool error)
     # worth a single reconnect + retry.
@@ -148,15 +216,17 @@ class MCPClientPool:
     async def _reconnect(self, server_name: str) -> None:
         """Re-establish a single server's session (e.g. after it restarted).
 
-        Drops the stale session and connects fresh. The old per-server exit
-        stack is left for shutdown() to close — releasing it here would risk
-        anyio's "cancel scope in a different task" since it was entered under a
-        different startup task."""
+        Гасит старый хост перед подъёмом нового: его стек закрывается в
+        собственной задаче, поэтому anyio-ошибки "cancel scope in a different
+        task" здесь не возникает, а старый stdio-процесс не остаётся жить."""
         cfg = self.configs.get(server_name)
         if cfg is None:
             raise RuntimeError(f"No stored config for '{server_name}' to reconnect")
         lock = self._reconnect_locks.setdefault(server_name, asyncio.Lock())
         async with lock:
+            stale = self._hosts.pop(server_name, None)
+            if stale is not None:
+                await stale.stop()
             await self._connect(server_name, cfg)
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict):
@@ -178,7 +248,12 @@ class MCPClientPool:
             return await session.call_tool(tool_name, arguments)
 
     async def shutdown(self) -> None:
-        await self._exit_stack.aclose()
+        hosts = list(self._hosts.values())
+        self._hosts.clear()
+        self.sessions.clear()
+        # Параллельно: последовательный цикл упирался бы в SHUTDOWN_TIMEOUT на
+        # каждый зависший хост, а их десятки.
+        await asyncio.gather(*(host.stop() for host in hosts))
 
     def get_all_tools(self) -> dict[str, list[Tool]]:
         return self.tools
