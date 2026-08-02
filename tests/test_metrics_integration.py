@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 
 from code_runner.executor import CodeExecutor, _ToolNamespace
 from code_runner.metrics import MetricsRecorder, code_fingerprint
@@ -56,7 +57,7 @@ class TestToolCallMetrics:
         assert ev["server"] == "mssql"
         assert ev["tool"] == "execute_sql"
         assert ev["success"] is True
-        assert ev["bytes"] == len('{"rows": [1, 2]}'.encode())
+        assert ev["bytes"] == len(b'{"rows": [1, 2]}')
         assert ev["duration_ms"] >= 0
         assert stats["tool_calls"] == 1
 
@@ -68,10 +69,8 @@ class TestToolCallMetrics:
             "mssql", session, [_FakeTool("execute_sql")],
             auto_limit=0, stats=stats, recorder=rec,
         )
-        try:
+        with contextlib.suppress(RuntimeError):
             asyncio.run(ns.execute_sql(query="SELECT 1"))
-        except RuntimeError:
-            pass
 
         events = rec.read(kind="tool_call")
         assert len(events) == 1

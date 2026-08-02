@@ -1,6 +1,6 @@
 from mcp.types import Tool
 
-from code_runner.schema_gen import tool_to_stub, generate_server_overview
+from code_runner.schema_gen import tool_to_stub
 
 
 def _make_tool(name: str, description: str, schema: dict) -> Tool:

@@ -7,15 +7,15 @@ filtering (time/server/kind) so `get_metrics` MCP tool can surface recent
 activity without pulling the whole history.
 """
 
+import contextlib
 import hashlib
 import json
 import os
 import sys
 import threading
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 DEFAULT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
 DEFAULT_BACKUP_COUNT = 3
@@ -35,7 +35,7 @@ def code_fingerprint(code: str) -> str:
 
 def _utc_now_iso() -> str:
     """ISO-8601 UTC timestamp with millisecond precision."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
@@ -59,10 +59,8 @@ class MetricsRecorder:
         self.backup_count = backup_count
         self.stderr = stderr
         self._lock = threading.Lock()
-        try:
+        with contextlib.suppress(OSError):
             self.path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
 
     def _rotated_path(self, i: int) -> Path:
         return self.path.with_name(f"{self.path.name}.{i}")
@@ -117,10 +115,8 @@ class MetricsRecorder:
                 print(f"[metrics] write failed: {e}", file=sys.stderr)
                 return
             if self.stderr:
-                try:
+                with contextlib.suppress(Exception):
                     print(self._format_short(event), file=sys.stderr)
-                except Exception:
-                    pass
 
     def _iter_files_chronological(self) -> list[Path]:
         files: list[Path] = []

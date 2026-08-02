@@ -4,7 +4,6 @@ import pytest
 
 from code_runner.skills import SkillLoader, SkillsNamespace
 
-
 TEMPLATES = Path(__file__).resolve().parent.parent / "skills_templates"
 
 

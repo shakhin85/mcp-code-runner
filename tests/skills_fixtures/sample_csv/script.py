@@ -1,5 +1,6 @@
 import csv
 
+
 def write_csv(rows, path):
     """Write a list of dicts to a CSV file in the workspace."""
     if not rows:

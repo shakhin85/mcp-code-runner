@@ -21,7 +21,7 @@ class TestMetricsRecorder:
             rec.record({"kind": "tool_call", "n": i})
         lines = (tmp_path / "m.jsonl").read_text().strip().splitlines()
         assert len(lines) == 3
-        assert [json.loads(l)["n"] for l in lines] == [0, 1, 2]
+        assert [json.loads(line)["n"] for line in lines] == [0, 1, 2]
 
     def test_non_serializable_falls_back_via_default(self, tmp_path):
         rec = MetricsRecorder(tmp_path / "m.jsonl", stderr=False)

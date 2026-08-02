@@ -1,11 +1,11 @@
+
 import pytest
-from pathlib import Path
 
 from code_runner.skills import (
     SkillLoader,
     SkillsNamespace,
-    write_skill_files,
     validate_skill_name,
+    write_skill_files,
 )
 
 

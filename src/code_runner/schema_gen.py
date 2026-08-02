@@ -4,7 +4,6 @@ Converts MCP tool schemas into Python function stubs for LLM consumption.
 
 from mcp.types import Tool
 
-
 _JSON_TYPE_MAP = {
     "string": "str",
     "integer": "int",
@@ -54,7 +53,11 @@ def _param_line(name: str, schema: dict, is_required: bool) -> tuple[str, str]:
         desc = f"{desc}. Structure: {obj_detail}" if desc else f"Structure: {obj_detail}"
 
     optional_tag = "" if is_required else ", optional"
-    doc = f"#   {name} ({py_type}{optional_tag}): {desc}" if desc else f"#   {name} ({py_type}{optional_tag})"
+    doc = (
+        f"#   {name} ({py_type}{optional_tag}): {desc}"
+        if desc
+        else f"#   {name} ({py_type}{optional_tag})"
+    )
 
     sig = f"{name}: {py_type}" if is_required else f"{name}: {py_type} = None"
 
@@ -105,7 +108,9 @@ def generate_stubs_for_server(server_py_name: str, tools: list[Tool]) -> str:
     return "\n".join(lines)
 
 
-def generate_full_reference(tools_by_server: dict[str, list[Tool]], py_name_map: dict[str, str]) -> str:
+def generate_full_reference(
+    tools_by_server: dict[str, list[Tool]], py_name_map: dict[str, str]
+) -> str:
     """Generate complete Python reference for all connected servers."""
     sections = []
     for py_name, server_name in sorted(py_name_map.items()):
@@ -114,7 +119,9 @@ def generate_full_reference(tools_by_server: dict[str, list[Tool]], py_name_map:
     return "\n\n".join(sections)
 
 
-def generate_server_overview(tools_by_server: dict[str, list[Tool]], py_name_map: dict[str, str]) -> str:
+def generate_server_overview(
+    tools_by_server: dict[str, list[Tool]], py_name_map: dict[str, str]
+) -> str:
     """Generate brief overview of connected servers (names + tool counts)."""
     lines = ["# Connected MCP servers:"]
     for py_name, server_name in sorted(py_name_map.items()):

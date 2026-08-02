@@ -21,26 +21,25 @@ credentials (``forkserver`` is opt-in and reintroduces COW inheritance).
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import builtins as _builtins
+import contextlib
+import json as _json
 import os
 import pickle
 import resource
 from typing import Any
 
 from .executor import (
-    SAFE_BUILTINS,
     _JSON_WRAPPED,
     _RESULT_SENTINEL,
     _SAFE_ASYNCIO_WRAPPED,
     _SAFE_MODULES_WRAPPED,
+    SAFE_BUILTINS,
     _format_user_traceback,
 )
-from .workspace import WorkspaceManager, WorkspaceError, safe_open
-
-import ast
-import builtins as _builtins
-import json as _json
-
+from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
 # Env vars the child keeps; everything else (API keys, tokens, connection
 # strings) is dropped before any user code runs, so an escape reaches a clean
@@ -60,10 +59,8 @@ def _scrub_env() -> None:
 def _apply_rlimits(limits: dict[str, int]) -> None:
     """Best-effort OS resource caps on this process. Each is independent."""
     def _set(res: int, soft: int, hard: int | None = None) -> None:
-        try:
+        with contextlib.suppress(ValueError, OSError):
             resource.setrlimit(res, (soft, hard if hard is not None else soft))
-        except (ValueError, OSError):
-            pass
 
     mem = limits.get("mem_bytes")
     if mem:
@@ -196,10 +193,8 @@ def _build_child_namespace(payload: dict, rpc: _RpcBridge) -> tuple[dict, set[st
         # the trusted parent — not attacker-supplied data. Even a hand-crafted
         # __reduce__ would run inside this already-sandboxed, rlimited child, so
         # it grants nothing the user's own code in the same session lacks.
-        try:
+        with contextlib.suppress(Exception):
             namespace.update(pickle.loads(persisted_blob))
-        except Exception:
-            pass
 
     return namespace, framework_names, output_lines
 
@@ -285,12 +280,7 @@ def run_worker(conn, payload: dict) -> None:
             "error": f"worker crashed: {type(e).__name__}: {e}",
             "user_vars": None,
         }
-    try:
+    with contextlib.suppress(BaseException):
         conn.send(("done", result))
-    except BaseException:
-        pass
-    finally:
-        try:
-            conn.close()
-        except BaseException:
-            pass
+    with contextlib.suppress(BaseException):
+        conn.close()

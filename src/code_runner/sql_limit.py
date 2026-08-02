@@ -12,7 +12,6 @@ from __future__ import annotations
 import sqlglot
 from sqlglot import expressions as exp
 
-
 _DIALECT_MAP = {
     "postgres": "postgres",
     "postgresql": "postgres",

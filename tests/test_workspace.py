@@ -1,9 +1,8 @@
 import os
-from pathlib import Path
 
 import pytest
 
-from code_runner.workspace import WorkspaceManager, WorkspaceError
+from code_runner.workspace import DEFAULT_WRITE_CAP, WorkspaceError, WorkspaceManager, safe_open
 
 
 @pytest.fixture
@@ -83,9 +82,6 @@ def test_resolve_path_returns_value_for_nul_byte_path(wm):
         wm.resolve_path("sess1", "a\x00b")
 
 
-from code_runner.workspace import safe_open, DEFAULT_WRITE_CAP
-
-
 def test_safe_open_write_text(wm):
     with safe_open(wm, "sess1", "out.txt", "w") as f:
         f.write("hello")
@@ -129,9 +125,11 @@ def test_safe_open_creates_parent_dirs(wm):
 
 
 def test_safe_open_write_cap_enforced(wm):
-    with pytest.raises(WorkspaceError, match="cap"):
-        with safe_open(wm, "sess1", "big.bin", "wb", max_bytes=10) as f:
-            f.write(b"x" * 11)
+    with (
+        pytest.raises(WorkspaceError, match="cap"),
+        safe_open(wm, "sess1", "big.bin", "wb", max_bytes=10) as f,
+    ):
+        f.write(b"x" * 11)
 
 
 def test_safe_open_write_cap_across_multiple_writes(wm):
@@ -152,9 +150,11 @@ def test_safe_open_traversal_rejected(wm):
 
 
 def test_safe_open_writelines_respects_cap(wm):
-    with pytest.raises(WorkspaceError, match="cap"):
-        with safe_open(wm, "sess1", "big.bin", "wb", max_bytes=10) as f:
-            f.writelines([b"x" * 6, b"y" * 6])  # 12 bytes total
+    with (
+        pytest.raises(WorkspaceError, match="cap"),
+        safe_open(wm, "sess1", "big.bin", "wb", max_bytes=10) as f,
+    ):
+        f.writelines([b"x" * 6, b"y" * 6])  # 12 bytes total
 
 
 def test_safe_open_zero_byte_write_at_cap_ok(wm):

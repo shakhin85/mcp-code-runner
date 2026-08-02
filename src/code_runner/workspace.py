@@ -173,7 +173,7 @@ class _CappedFile:
 
 
 def safe_open(
-    wm: "WorkspaceManager",
+    wm: WorkspaceManager,
     session_id: str,
     path: str,
     mode: str = "r",

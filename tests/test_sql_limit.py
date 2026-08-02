@@ -1,6 +1,5 @@
 """Tests for automatic LIMIT injection in SQL queries."""
 
-import pytest
 
 from code_runner.sql_limit import inject_limit
 

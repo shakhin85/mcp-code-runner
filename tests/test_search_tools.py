@@ -1,10 +1,14 @@
 from mcp.types import Tool
 
-from code_runner.server import _search_tools_logic, _overview_logic
+from code_runner.server import _overview_logic, _search_tools_logic
 
 
 def _make_tool(name, description="", schema=None):
-    return Tool(name=name, description=description or name, inputSchema=schema or {"type": "object", "properties": {}})
+    return Tool(
+        name=name,
+        description=description or name,
+        inputSchema=schema or {"type": "object", "properties": {}},
+    )
 
 
 TOOLS_BY_SERVER = {

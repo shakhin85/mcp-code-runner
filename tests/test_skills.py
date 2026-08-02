@@ -2,8 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from code_runner.skills import SkillLoader, SkillSpec, SkillsNamespace
-
+from code_runner.skills import SkillLoader, SkillsNamespace, SkillSpec
 
 FIXTURE_DIR = Path(__file__).parent / "skills_fixtures"
 
@@ -62,21 +61,21 @@ def test_namespace_calls_skill_function(tmp_path):
 def test_namespace_unknown_skill_raises():
     ns = SkillsNamespace({})
     with pytest.raises(AttributeError, match="unknown"):
-        ns.unknown
+        _ = ns.unknown
 
 
 def test_namespace_unknown_function_raises():
     loader = SkillLoader(FIXTURE_DIR)
     ns = SkillsNamespace(loader.discover())
     with pytest.raises(AttributeError):
-        ns.sample_csv.does_not_exist
+        _ = ns.sample_csv.does_not_exist
 
 
 def test_namespace_hides_private_names():
     loader = SkillLoader(FIXTURE_DIR)
     ns = SkillsNamespace(loader.discover())
     with pytest.raises(AttributeError):
-        ns.sample_csv._private
+        _ = ns.sample_csv._private
 
 
 def test_namespace_repr_lists_skills():
@@ -94,7 +93,7 @@ def test_broken_skill_raises_only_on_access(tmp_path):
     ns = SkillsNamespace(SkillLoader(tmp_path).discover())
     # Construction did not raise
     with pytest.raises(RuntimeError) as exc_info:
-        ns.broken.f
+        _ = ns.broken.f
     msg = str(exc_info.value)
     assert "broken" in msg  # skill name preserved
     assert "syntax" in msg.lower() or "invalid" in msg.lower()  # original SyntaxError preserved
@@ -102,10 +101,12 @@ def test_broken_skill_raises_only_on_access(tmp_path):
 
 def test_bind_overrides_builtin_for_all_skills(tmp_path):
     # Two skills, both calling print() — bind print to capture, verify both see it.
-    a = tmp_path / "a"; a.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
     (a / "script.py").write_text("def go():\n    print('from-a')\n")
     (a / "SKILL.md").write_text("---\ndescription: a\n---")
-    b = tmp_path / "b"; b.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
     (b / "script.py").write_text("def go():\n    print('from-b')\n")
     (b / "SKILL.md").write_text("---\ndescription: b\n---")
 
@@ -119,13 +120,16 @@ def test_bind_overrides_builtin_for_all_skills(tmp_path):
 
 
 def test_find_callables_resolves_name_across_skills(tmp_path):
-    a = tmp_path / "a"; a.mkdir()
+    a = tmp_path / "a"
+    a.mkdir()
     (a / "script.py").write_text("def query(text, client, top_k=5):\n    return text\n")
     (a / "SKILL.md").write_text("---\ndescription: a\n---")
-    b = tmp_path / "b"; b.mkdir()
+    b = tmp_path / "b"
+    b.mkdir()
     (b / "script.py").write_text("def query(other):\n    return other\n")
     (b / "SKILL.md").write_text("---\ndescription: b\n---")
-    broken = tmp_path / "broken"; broken.mkdir()
+    broken = tmp_path / "broken"
+    broken.mkdir()
     (broken / "script.py").write_text("def query(:\n")
     (broken / "SKILL.md").write_text("---\ndescription: broken\n---")
 
