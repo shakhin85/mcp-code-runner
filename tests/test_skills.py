@@ -116,3 +116,21 @@ def test_bind_overrides_builtin_for_all_skills(tmp_path):
     ns.a.go()
     ns.b.go()
     assert captured == ["from-a", "from-b"]
+
+
+def test_find_callables_resolves_name_across_skills(tmp_path):
+    a = tmp_path / "a"; a.mkdir()
+    (a / "script.py").write_text("def query(text, client, top_k=5):\n    return text\n")
+    (a / "SKILL.md").write_text("---\ndescription: a\n---")
+    b = tmp_path / "b"; b.mkdir()
+    (b / "script.py").write_text("def query(other):\n    return other\n")
+    (b / "SKILL.md").write_text("---\ndescription: b\n---")
+    broken = tmp_path / "broken"; broken.mkdir()
+    (broken / "script.py").write_text("def query(:\n")
+    (broken / "SKILL.md").write_text("---\ndescription: broken\n---")
+
+    ns = SkillsNamespace(SkillLoader(tmp_path).discover())
+    found = ns.find_callables("query")
+
+    assert [name for name, _fn in found] == ["a", "b"]  # broken skill skipped
+    assert ns.find_callables("nope") == []

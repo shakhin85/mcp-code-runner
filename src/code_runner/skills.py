@@ -200,6 +200,23 @@ class SkillsNamespace:
             }
             self._proxies[name] = SkillProxy(name, callables)
 
+    def find_callables(self, fn_name: str) -> list[tuple[str, Any]]:
+        """All loaded skill callables named `fn_name`, as (skill_name, fn).
+
+        A TypeError from CPython names only the function ("query() got an
+        unexpected keyword argument 'limit'"), not the skill it lives in.
+        This resolves that name back to the actual object(s) so the executor
+        can show the real signature instead of leaving the caller to guess.
+        """
+        out: list[tuple[str, Any]] = []
+        for skill_name, proxy in sorted(self._proxies.items()):
+            if not isinstance(proxy, SkillProxy):
+                continue
+            fn = proxy._callables.get(fn_name)
+            if fn is not None:
+                out.append((skill_name, fn))
+        return out
+
     def bind(self, name: str, value: Any) -> None:
         """Override a builtin seen by all loaded skills.
 

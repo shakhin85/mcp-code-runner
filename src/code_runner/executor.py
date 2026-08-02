@@ -15,6 +15,7 @@ import decimal
 import functools
 import hashlib
 import heapq
+import inspect
 import itertools
 import json
 import math
@@ -533,6 +534,50 @@ def _str_result_hint(exc: BaseException, stats: dict[str, int]) -> str:
     if any(marker in msg for marker in _SUBSCRIPT_ERROR_MARKERS):
         return _STR_RESULT_HINT
     return ""
+
+
+# CPython names the function but never its accepted parameters, so a caller who
+# guessed a kwarg has to guess again on the next run. These match the two ways
+# that guess fails: an extra kwarg, or a positional the caller passed as kwarg.
+_SIG_ERROR_RES = (
+    re.compile(r"(\w+)\(\) got an unexpected keyword argument '([^']+)'"),
+    re.compile(r"(\w+)\(\) missing \d+ required positional argument"),
+    re.compile(r"(\w+)\(\) takes \d+ positional argument"),
+)
+
+
+def _signature_hint(exc: BaseException, skills: "SkillsNamespace | None") -> str:
+    """Append the real signature when a skill call fails on its arguments.
+
+    Signatures live in a cheatsheet the caller may not have read; without this
+    the only feedback is "unexpected keyword argument 'X'", which costs one
+    round-trip per wrong guess. Resolving the name against the loaded skills
+    turns that into a single corrected call.
+    """
+    if skills is None or not isinstance(exc, TypeError):
+        return ""
+    msg = str(exc)
+    fn_name = ""
+    for pattern in _SIG_ERROR_RES:
+        m = pattern.search(msg)
+        if m:
+            fn_name = m.group(1)
+            break
+    if not fn_name:
+        return ""
+    lines = []
+    for skill_name, fn in skills.find_callables(fn_name):
+        try:
+            sig = inspect.signature(fn)
+        except (TypeError, ValueError):
+            continue
+        lines.append(f"skills.{skill_name}.{fn_name}{sig}")
+    if not lines:
+        return ""
+    # Named after the skill path, not "принимаемые параметры": a user-defined
+    # function can share the name, and then these are merely the skills that
+    # also answer to it — the caller must see which object the signature is for.
+    return "\n\nHINT: сигнатуры skills-функций с этим именем —\n  " + "\n  ".join(lines)
 
 
 def _transform_last_expr(code: str) -> str:
@@ -1210,7 +1255,9 @@ class CodeExecutor:
             return finalize(
                 False,
                 "".join(output_lines),
-                _format_user_traceback(e) + _str_result_hint(e, stats),
+                _format_user_traceback(e)
+                + _str_result_hint(e, stats)
+                + _signature_hint(e, self.skills),
             )
         finally:
             if alarm_armed:

@@ -6,6 +6,7 @@ import pytest
 
 from code_runner.executor import (
     validate_code,
+    _signature_hint,
     CodeExecutor,
     _ToolNamespace,
     MCPToolError,
@@ -1062,3 +1063,39 @@ def test_cost_footer_silent_when_aggregation_happened():
     stats = {"tool_calls": 1, "raw_tool_bytes": 50_000}
     out = _append_cost_footer("42 rows", stats, elapsed_ms=10)
     assert "no aggregation happened here" not in out
+
+
+# --- signature hint on argument-shape TypeErrors ---------------------------
+
+def _skills_with_query(tmp_path):
+    from code_runner.skills import SkillLoader, SkillsNamespace
+    d = tmp_path / "fake_skill"; d.mkdir()
+    (d / "script.py").write_text(
+        "async def query(query_text, client, project_ids=None, top_k=5):\n"
+        "    return query_text\n"
+    )
+    (d / "SKILL.md").write_text("---\ndescription: fake\n---")
+    return SkillsNamespace(SkillLoader(tmp_path).discover())
+
+
+def test_signature_hint_lists_accepted_params(tmp_path):
+    skills = _skills_with_query(tmp_path)
+    with pytest.raises(TypeError) as exc_info:
+        skills.fake_skill.query("q", None, limit=6)
+    hint = _signature_hint(exc_info.value, skills)
+    assert "skills.fake_skill.query(query_text, client, project_ids=None, top_k=5)" in hint
+
+
+def test_signature_hint_covers_missing_positional(tmp_path):
+    skills = _skills_with_query(tmp_path)
+    with pytest.raises(TypeError) as exc_info:
+        skills.fake_skill.query("q")
+    assert "skills.fake_skill.query(" in _signature_hint(exc_info.value, skills)
+
+
+def test_signature_hint_silent_for_unrelated_errors(tmp_path):
+    skills = _skills_with_query(tmp_path)
+    assert _signature_hint(TypeError("unsupported operand type(s)"), skills) == ""
+    assert _signature_hint(ValueError("query() got an unexpected keyword argument 'x'"), skills) == ""
+    assert _signature_hint(TypeError("foo() got an unexpected keyword argument 'x'"), skills) == ""
+    assert _signature_hint(TypeError("query() got an unexpected keyword argument 'x'"), None) == ""
