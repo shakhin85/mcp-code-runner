@@ -81,7 +81,13 @@ async def _daemon_state_singleton() -> dict[str, Any]:
     async with _daemon_lock:
         if _daemon_state is None:
             host = _PoolHost("global", load_server_configs(SKIP_SERVERS))
-            await asyncio.wait_for(host.ready.wait(), timeout=STARTUP_TIMEOUT)
+            try:
+                await asyncio.wait_for(host.ready.wait(), timeout=STARTUP_TIMEOUT)
+            except TimeoutError:
+                # Tear the host down before propagating, or the orphaned task
+                # would duplicate the pool when the next session retries.
+                await host.stop()
+                raise
             registry = ProjectPoolRegistry(
                 global_names=set(host.pool.configs), skip_servers=SKIP_SERVERS
             )
