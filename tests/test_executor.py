@@ -5,12 +5,15 @@ import time
 import pytest
 
 from code_runner.executor import (
-    validate_code,
-    _signature_hint,
-    CodeExecutor,
-    _ToolNamespace,
-    MCPToolError,
     MAX_ERROR_DETAIL,
+    CodeExecutor,
+    MCPToolError,
+    _append_cost_footer,
+    _limit_error_hint,
+    _name_error_hint,
+    _signature_hint,
+    _ToolNamespace,
+    validate_code,
 )
 
 
@@ -233,7 +236,10 @@ class TestModuleReexportEscape:
     ESCAPES = [
         ("uuid.os", "print(uuid.os.getpid())"),
         ("uuid.sys", "print(uuid.sys.modules['socket'])"),
-        ("dataclasses.sys", "print(dataclasses.sys.modules['builtins'].open('/etc/hostname').read())"),
+        (
+            "dataclasses.sys",
+            "print(dataclasses.sys.modules['builtins'].open('/etc/hostname').read())",
+        ),
         ("statistics.sys", "print(statistics.sys.modules['os'])"),
         ("random._os", "print(random._os.getuid())"),
         ("collections._sys", "print(collections._sys.modules['os'])"),
@@ -893,6 +899,7 @@ class TestPersistentNamespace:
 
     def test_ttl_expiry_on_next_access(self, executor):
         import time
+
         from code_runner.executor import SESSION_TTL
         asyncio.run(executor.execute("x = 1", session_id="old"))
         # force expiry by rewinding last_access
@@ -971,8 +978,8 @@ class TestSkillsIntegration:
         return Path(__file__).parent / "skills_fixtures"
 
     def _make_executor(self, tmp_path, fixture_dir):
-        from code_runner.workspace import WorkspaceManager
         from code_runner.skills import SkillLoader, SkillsNamespace
+        from code_runner.workspace import WorkspaceManager
         ns = SkillsNamespace(SkillLoader(fixture_dir).discover())
         class FakePool:
             sessions = {}
@@ -1000,7 +1007,8 @@ class TestSkillsIntegration:
         ex = self._make_executor(tmp_path, fixture_dir)
         result = asyncio.run(ex.execute("skills.nope", session_id="s2"))
         assert result["success"] is False
-        assert "unknown" in (result["error"] or "").lower() or "skills" in (result["error"] or "").lower()
+        err = (result["error"] or "").lower()
+        assert "unknown" in err or "skills" in err
 
     def test_skills_absent_when_not_provided(self, tmp_path):
         from code_runner.workspace import WorkspaceManager
@@ -1036,8 +1044,6 @@ class TestSkillsIntegration:
 
 # --- cost receipt: the saving (or its absence) must be visible ---
 
-from code_runner.executor import _append_cost_footer
-
 
 def test_cost_footer_absent_without_tool_calls():
     stats = {"tool_calls": 0, "raw_tool_bytes": 0}
@@ -1069,7 +1075,8 @@ def test_cost_footer_silent_when_aggregation_happened():
 
 def _skills_with_query(tmp_path):
     from code_runner.skills import SkillLoader, SkillsNamespace
-    d = tmp_path / "fake_skill"; d.mkdir()
+    d = tmp_path / "fake_skill"
+    d.mkdir()
     (d / "script.py").write_text(
         "async def query(query_text, client, project_ids=None, top_k=5):\n"
         "    return query_text\n"
@@ -1096,6 +1103,64 @@ def test_signature_hint_covers_missing_positional(tmp_path):
 def test_signature_hint_silent_for_unrelated_errors(tmp_path):
     skills = _skills_with_query(tmp_path)
     assert _signature_hint(TypeError("unsupported operand type(s)"), skills) == ""
-    assert _signature_hint(ValueError("query() got an unexpected keyword argument 'x'"), skills) == ""
+    msg = "query() got an unexpected keyword argument 'x'"
+    assert _signature_hint(ValueError(msg), skills) == ""
     assert _signature_hint(TypeError("foo() got an unexpected keyword argument 'x'"), skills) == ""
     assert _signature_hint(TypeError("query() got an unexpected keyword argument 'x'"), None) == ""
+
+
+# --- name-error hint: sandbox roster on unknown names -----------------------
+
+def _namespace_with_proxies():
+    return {
+        "__builtins__": {},
+        "json": None,
+        "postgres_lime_prod": _ToolNamespace("postgres_lime_prod", None, []),
+        "postgres_ofd": _ToolNamespace("postgres_ofd", None, []),
+        "_internal": object(),
+    }
+
+
+def test_name_error_hint_suggests_close_match_and_proxies():
+    ns = _namespace_with_proxies()
+    hint = _name_error_hint(NameError("name 'postgres_lime' is not defined"), ns)
+    assert "postgres_lime_prod" in hint
+    assert "доступные MCP-прокси: postgres_lime_prod, postgres_ofd" in hint
+    assert "_internal" not in hint
+
+
+def test_name_error_hint_lists_proxies_without_close_match():
+    ns = _namespace_with_proxies()
+    hint = _name_error_hint(NameError("name 'zzz_unrelated' is not defined"), ns)
+    assert "доступные MCP-прокси" in hint
+
+
+def test_name_error_hint_silent_for_other_errors():
+    ns = _namespace_with_proxies()
+    assert _name_error_hint(ValueError("name 'x' is not defined"), ns) == ""
+    assert _name_error_hint(NameError("weird message shape"), ns) == ""
+    assert _name_error_hint(NameError("name 'x' is not defined"), {"__builtins__": {}}) == ""
+
+
+# --- limit hint: skills hard-validator ValueError ("<=500 chars") ------------
+
+def test_limit_error_hint_names_the_limit():
+    hint = _limit_error_hint(ValueError("context: <=500 chars, got 608"))
+    assert "500" in hint
+    assert "value[:500]" in hint
+
+
+def test_limit_error_hint_silent_for_other_value_errors():
+    assert _limit_error_hint(ValueError("invalid literal for int()")) == ""
+    assert _limit_error_hint(TypeError("context: <=500 chars, got 608")) == ""
+
+
+# --- import hint: roster for non-preloaded modules ---------------------------
+
+def test_import_os_error_lists_preloaded_roster():
+    with pytest.raises(ValueError) as exc_info:
+        validate_code("import os")
+    msg = str(exc_info.value)
+    assert "preloaded:" in msg
+    assert "json" in msg
+    assert "open()" in msg

@@ -9,9 +9,11 @@ import base64
 import bisect
 import builtins
 import collections
+import contextlib
 import dataclasses
 import datetime
 import decimal
+import difflib
 import functools
 import hashlib
 import heapq
@@ -41,10 +43,9 @@ from mcp.types import Tool
 from . import prelude as _prelude
 from .config_reader import server_name_to_py
 from .metrics import MetricsRecorder, code_fingerprint
-from .sql_limit import inject_limit
 from .skills import SkillsNamespace
-from .workspace import WorkspaceManager, safe_open, WorkspaceError
-
+from .sql_limit import inject_limit
+from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
 SAFE_BUILTINS = {
     "print", "len", "range", "enumerate", "zip", "map", "filter",
@@ -176,9 +177,8 @@ def _validate_repr_ast(tree: ast.AST) -> None:
     for node in ast.walk(tree):
         if not isinstance(node, _REPR_ALLOWED_NODES):
             raise ValueError(f"disallowed node: {type(node).__name__}")
-        if isinstance(node, ast.Name):
-            if node.id not in _REPR_NAMESPACE:
-                raise ValueError(f"disallowed name: {node.id}")
+        if isinstance(node, ast.Name) and node.id not in _REPR_NAMESPACE:
+            raise ValueError(f"disallowed name: {node.id}")
         if isinstance(node, ast.Attribute):
             root: ast.AST = node
             while isinstance(root, ast.Attribute):
@@ -303,10 +303,11 @@ def _truncate_error(error: str | None, max_bytes: int) -> str | None:
     if total <= max_bytes:
         return error
     kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    kept_bytes = len(kept.encode("utf-8"))
     return (
         kept
         + f"\n...[ERROR TRUNCATED: {total} bytes, kept first {max_bytes}]"
-        + f"\n<system_hint>error truncated: shown {len(kept.encode('utf-8'))} of {total} bytes</system_hint>"
+        + f"\n<system_hint>error truncated: shown {kept_bytes} of {total} bytes</system_hint>"
     )
 
 
@@ -457,6 +458,15 @@ def validate_code(code: str) -> None:
                     f" — {', '.join(already)} уже preloaded в sandbox: "
                     f"убери import и используй напрямую (top-level await поддержан)"
                 )
+            else:
+                # `import os` alone is 17 of 52 import-failures over 7 days:
+                # without the roster the caller retries with another module and
+                # burns a round-trip per guess.
+                hint = (
+                    " — sandbox не даёт os/сеть/произвольные модули; preloaded: "
+                    f"{', '.join(sorted(preloaded))}. Файлы — через open() "
+                    "(session-workspace), MCP-серверы — через их прокси-объекты"
+                )
             raise ValueError(
                 f"import statements are not allowed: {', '.join(names)}{hint}"
             )
@@ -578,6 +588,70 @@ def _signature_hint(exc: BaseException, skills: "SkillsNamespace | None") -> str
     # function can share the name, and then these are merely the skills that
     # also answer to it — the caller must see which object the signature is for.
     return "\n\nHINT: сигнатуры skills-функций с этим именем —\n  " + "\n  ".join(lines)
+
+
+_NAME_ERROR_RE = re.compile(r"name '([^']+)' is not defined")
+
+
+def _name_error_hint(exc: BaseException, namespace: dict[str, Any]) -> str:
+    """Append the sandbox roster when user code references an unknown name.
+
+    The dominant NameError in production is a guessed MCP-proxy name
+    (``postgres_lime`` vs ``postgres_lime_prod``): the caller never sees the
+    real roster, so each guess costs a full round-trip. Close matches go
+    first; the proxy list follows because that is the namespace the caller
+    was almost certainly reaching for.
+    """
+    if not isinstance(exc, NameError):
+        return ""
+    m = _NAME_ERROR_RE.search(str(exc))
+    if not m:
+        return ""
+    missing = m.group(1)
+    visible = sorted(
+        name for name in namespace
+        if not name.startswith("_") and name != "__builtins__"
+    )
+    close = difflib.get_close_matches(missing, visible, n=3, cutoff=0.6)
+    proxies = sorted(
+        name for name, value in namespace.items()
+        if isinstance(value, _ToolNamespace)
+    )
+    parts = []
+    if close:
+        parts.append(f"похожие имена в песочнице: {', '.join(close)}")
+    if proxies:
+        parts.append(f"доступные MCP-прокси: {', '.join(proxies)}")
+    if not parts:
+        return ""
+    return "\n\nHINT: имя '" + missing + "' в песочнице не определено; " + "; ".join(parts)
+
+
+# The exact shape skill hard-validators raise: "context: <=500 chars, got 608".
+# The constraint is machine-readable, so the fix (slice to the limit) can be
+# stated instead of leaving the caller to re-derive it.
+_LIMIT_ERROR_RE = re.compile(r"<=\s*(\d+)\s+chars, got (\d+)")
+
+
+def _limit_error_hint(exc: BaseException) -> str:
+    """Turn a skills length-validator ValueError into an actionable fix.
+
+    The validator names the limit but not the remedy; without this the whole
+    execute_code block dies and the caller retries blind. Truncation is never
+    done silently — the hint tells the caller to slice explicitly so the cut
+    is visible in their own code.
+    """
+    if not isinstance(exc, ValueError):
+        return ""
+    m = _LIMIT_ERROR_RE.search(str(exc))
+    if not m:
+        return ""
+    limit = m.group(1)
+    return (
+        f"\n\nHINT: жёсткий валидатор skills — значение длиннее {limit} символов. "
+        f"Обрежь его явно перед вызовом (value[:{limit}]) и перезапусти блок; "
+        f"авто-truncate намеренно не выполняется, чтобы обрезка была видна в коде."
+    )
 
 
 def _transform_last_expr(code: str) -> str:
@@ -757,7 +831,7 @@ class _ToolNamespace:
                         self._stats.get("raw_tool_bytes", 0) + out_bytes
                     )
                 if self._recorder is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         self._recorder.record({
                             "kind": "tool_call",
                             "server": server,
@@ -768,8 +842,6 @@ class _ToolNamespace:
                             "limit_applied": limit_applied,
                             "error": error,
                         })
-                    except Exception:
-                        pass
 
         wrapper.__name__ = tool_name
         wrapper.__qualname__ = f"{server}.{tool_name}"
@@ -795,7 +867,9 @@ class CodeExecutor:
     ):
         self.pool = pool
         self.recorder = recorder
-        self.workspace = workspace if workspace is not None else WorkspaceManager(DEFAULT_WORKSPACE_ROOT)
+        self.workspace = (
+            workspace if workspace is not None else WorkspaceManager(DEFAULT_WORKSPACE_ROOT)
+        )
         self.skills = skills
         # "subprocess" runs each call in a fresh, rlimited child; "inprocess" is
         # the legacy same-interpreter path. Ignored (forced inprocess) where the
@@ -803,7 +877,9 @@ class CodeExecutor:
         chosen = (isolation or _ISOLATION_DEFAULT)
         self._isolation = chosen if _SUBPROCESS_AVAILABLE else "inprocess"
         self._mem_limit_mb = mem_limit_mb if mem_limit_mb is not None else _MEM_LIMIT_MB_DEFAULT
-        self._fsize_limit_mb = fsize_limit_mb if fsize_limit_mb is not None else _FSIZE_LIMIT_MB_DEFAULT
+        self._fsize_limit_mb = (
+            fsize_limit_mb if fsize_limit_mb is not None else _FSIZE_LIMIT_MB_DEFAULT
+        )
         # Signals are process-global and can only be armed from the main
         # thread — serialize executions so two concurrent calls can't clobber
         # each other's SIGALRM state.
@@ -888,7 +964,9 @@ class CodeExecutor:
         raw_cap: int = 0,
     ) -> tuple[dict[str, Any], set[str]]:
         # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
-        safe_builtins = {name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)}
+        safe_builtins = {
+            name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)
+        }
         namespace: dict[str, Any] = {
             "__builtins__": safe_builtins,
             "asyncio": _SAFE_ASYNCIO_WRAPPED,
@@ -1040,7 +1118,7 @@ class CodeExecutor:
 
         try:
             result = await asyncio.wait_for(_serve(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             result = {
                 "success": False, "output": "",
                 "error": f"Execution timed out after {timeout}s (isolation subprocess killed)",
@@ -1245,7 +1323,7 @@ class CodeExecutor:
                 "".join(output_lines),
                 f"Execution timed out after {timeout}s (CPU-bound loop detected by SIGALRM)",
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return finalize(
                 False,
                 "".join(output_lines),
@@ -1257,7 +1335,9 @@ class CodeExecutor:
                 "".join(output_lines),
                 _format_user_traceback(e)
                 + _str_result_hint(e, stats)
-                + _signature_hint(e, self.skills),
+                + _signature_hint(e, self.skills)
+                + _name_error_hint(e, namespace)
+                + _limit_error_hint(e),
             )
         finally:
             if alarm_armed:
