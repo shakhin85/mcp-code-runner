@@ -11,3 +11,6 @@ models/
 # codegraph local index
 .codegraph/
 .dual-graph/
+
+.task-record.json
+CONTEXT.md.bak
