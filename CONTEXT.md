@@ -1,14 +1,19 @@
-# CONTEXT
+# Task: updated_code_runner
 
-## Current Task
-Research-находки внедрены и проверены на живом GPU (RTX 3060). Отчёт — Linear SHA-42 (судья дедупликации) и SHA-43 (остальное).
+**Status:** in_progress
+**Linear:** —
+**Updated:** 2026-08-02T09:19:53.556426+00:00
 
-## Key Decisions
-- Дедуп-судья допускается по **асимметрии ошибок** (`over_aggressive_rate ≤ 5%`), не по accuracy: при base rate 6.5% «всегда related» даёт 93.5%. Замер на 93 парах: **gemma3:12b PASS** (93.5%/2.3%) — судья по умолчанию; qwen3:14b FAIL (86.0%/13.8%); mistral-nemo упал на контроле. Размер модели не решает: 12B калибрована лучше 14B, а 27–32B не влезает в 12 ГБ VRAM.
-- Гейт **запрещающий**: провал A/B снимает `confirmed`-штампы своего прогона (точечно). Деструктивный `consolidate.py --apply` остаётся интерактивным.
-- PPR поверх code-графа отклонён по замеру: лексика уже даёт rank=1 (182 узла), PPR 0w/3t/2l. Кандидат — memory-граф, не код.
+## Steps
+(no steps)
 
-## Next Steps
-- Перегнать ночь на gemma3:12b (ожидание: мало `confirmed`); замерить связку «qwen3 recall-фильтр → gemma3 решающий».
-- Graphiti: `poc.py ingest -n 30` на bge-m3 + temporal-вопросы (FalkorDB поднят, пуст).
-- Решение по webhook: `~/.claude/tools/gitea-review-hook/BLOCKED.md`; параметризовать топ-3 драфта из `~/.claude/tools/skill-distiller/drafts/`. Задачи: `bd list` (prefix `sha`).
+## Checkpoint
+relay iter4/5: judge GREEN — все 6 DONE закрыты; 1ae555d HINT-ы NameError/import/<=N-валидаторов + регресс-тесты, 1054eb7 ruff 34→0; gap-таблица, 6 строк бэклога, bench «после»; деплой ok TasksCurrent=165
+
+## Next
+iter5 (полировка): замер TypeError/NameError-частоты после HINT-ов на 7д-окне; SQL-сценарий bench из проекта с postgres; опц. Linear-комментарий
+
+## Refs
+- episodes: —
+- decisions: —
+- why: —
