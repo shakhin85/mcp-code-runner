@@ -41,6 +41,10 @@ SKIP_SERVERS: set[str] = {"code-runner", "serena"} | {
     if s.strip()
 }
 
+# roots/list is a server->client callback: a client that never answers it
+# (or claims the capability and stays silent) would hang the call forever.
+ROOTS_TIMEOUT = 5.0
+
 SKILLS_DIR = Path.home() / ".claude" / "code-runner-skills"
 
 
@@ -126,7 +130,7 @@ async def _resolve_project_dir(ctx: Context) -> "Path | None":
         return _session_roots[session]
     project_dir: Path | None = None
     try:
-        result = await ctx.session.list_roots()
+        result = await asyncio.wait_for(ctx.session.list_roots(), timeout=ROOTS_TIMEOUT)
         for root in result.roots:
             parsed = urlparse(str(root.uri))
             if parsed.scheme == "file" and parsed.path:
@@ -134,6 +138,11 @@ async def _resolve_project_dir(ctx: Context) -> "Path | None":
                 if candidate.is_dir():
                     project_dir = candidate
                     break
+    except TimeoutError:
+        logger.warning(
+            f"list_roots timed out after {ROOTS_TIMEOUT}s — client does not answer "
+            "roots/list; falling back to the global pool"
+        )
     except Exception as e:
         logger.debug(f"list_roots unavailable: {e}")
     _session_roots[session] = project_dir
@@ -424,7 +433,7 @@ async def save_skill(name: str, code: str, description: str, ctx: Context) -> st
 async def debug_roots(ctx: Context) -> str:
     """TEMP: report MCP roots the client exposes (per-session project dir probe)."""
     try:
-        result = await ctx.session.list_roots()
+        result = await asyncio.wait_for(ctx.session.list_roots(), timeout=ROOTS_TIMEOUT)
         return json.dumps([str(r.uri) for r in result.roots])
     except Exception as e:
         return f"list_roots failed: {type(e).__name__}: {e}"
