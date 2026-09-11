@@ -276,11 +276,15 @@ def _dialect_for_server(server_name: str) -> str | None:
 
 
 class _SessionState:
-    __slots__ = ("user_vars", "last_access")
+    __slots__ = ("user_vars", "last_access", "blocks", "failed_block")
 
     def __init__(self) -> None:
         self.user_vars: dict[str, Any] = {}
         self.last_access: float = time.monotonic()
+        # Номер блока в сессии и последний упавший блок с присваиваниями:
+        # (номер, строка, имена). Упавший блок не сохраняет переменные — см. _failed_block_hint.
+        self.blocks: int = 0
+        self.failed_block: tuple[int, int | None, frozenset[str]] | None = None
 
 
 def _truncate_output(output: str, max_bytes: int) -> str:
@@ -643,6 +647,70 @@ def _name_error_hint(exc: BaseException, namespace: dict[str, Any]) -> str:
     if not parts:
         return ""
     return "\n\nHINT: имя '" + missing + "' в песочнице не определено; " + "; ".join(parts)
+
+
+_SCOPE_NODES = (
+    ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda,
+    ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
+)
+_USER_LINE_RE = re.compile(r'File "<user>", line (\d+)')
+_NAME_ERROR_HEADER_RE = re.compile(r"NameError: name '([^']+)' is not defined")
+
+
+def _assigned_names(code: str) -> frozenset[str]:
+    """Names a block binds at module scope — the ones a session would persist.
+
+    Locals of functions, classes, lambdas and comprehensions are skipped: they
+    never reach the session, so a NameError on them is not the failed block's fault.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return frozenset()
+    names: set[str] = set()
+
+    def visit(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                names.add(child.name)
+            if isinstance(child, _SCOPE_NODES):
+                continue
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+                names.add(child.id)
+            visit(child)
+
+    visit(tree)
+    return frozenset(names)
+
+
+def _error_line(error: str) -> int | None:
+    """Innermost `<user>` line of a formatted traceback, or None."""
+    lines = _USER_LINE_RE.findall(error)
+    return int(lines[-1]) if lines else None
+
+
+def _failed_block_hint(
+    error: str, failed_block: tuple[int, int | None, frozenset[str]] | None,
+) -> str:
+    """Point a NameError at the earlier failed block that should have bound the name.
+
+    A failed block persists none of its variables, so the next block dies on a
+    NameError whose roster hint suggests a typo. The session remembers the last
+    failed block; when the missing name is one it assigns, the real cause is that
+    block, not the spelling.
+    """
+    if failed_block is None:
+        return ""
+    m = _NAME_ERROR_HEADER_RE.search(error)
+    if not m or m.group(1) not in failed_block[2]:
+        return ""
+    block_no, line, _names = failed_block
+    where = f" на строке {line}" if line is not None else ""
+    return (
+        f"\n\nHINT: блок {block_no} упал{where}, переменная {m.group(1)} не присвоена — "
+        f"упавший блок не сохраняет в сессии ни одной своей переменной; "
+        f"перезапусти его присваивания."
+    )
 
 
 # The exact shape skill hard-validators raise: "context: <=500 chars, got 608".
@@ -1232,8 +1300,22 @@ class CodeExecutor:
         stats: dict[str, int] = {
             "tool_calls": 0, "auto_limit_hits": 0, "str_results": 0, "raw_tool_bytes": 0,
         }
+        source = code
+        state = self._get_or_create_session(session_id) if session_id is not None else None
+        block_no = 0
+        if state is not None:
+            state.blocks += 1
+            block_no = state.blocks
 
         def finalize(success: bool, output: str, error: str | None) -> dict[str, Any]:
+            if state is not None and not success and error:
+                line = _error_line(error)
+                error += _failed_block_hint(error, state.failed_block)
+                # Блок без присваиваний ничего не потерял и будущий NameError не
+                # объясняет — он не затирает прошлый упавший блок.
+                names = _assigned_names(source)
+                if names:
+                    state.failed_block = (block_no, line, names)
             error = _truncate_error(error, MAX_ERROR_BYTES)
             truncated = _truncate_output(output, max_output_bytes)
             truncated = _append_cost_footer(
