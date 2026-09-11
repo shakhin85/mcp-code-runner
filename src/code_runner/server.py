@@ -322,6 +322,7 @@ async def execute_code(
     auto_limit: int = 500,
     raw_cap: int = 262144,
     per_call_timeout: float = 30.0,
+    allow_side_effects: list[str] | None = None,
 ) -> str:
     """
     Execute Python code with access to all connected MCP tools.
@@ -364,6 +365,13 @@ async def execute_code(
             `TimeoutError: <server>.<tool> > 30s` in user code instead of
             holding the whole run. `timeout` stays the upper bound. Pass 0 to
             disable.
+        allow_side_effects: Server.tool entries (e.g. "bitrix24.crm_deal_add")
+            explicitly allowed to run. A tool whose name looks side-effecting
+            (add/create/update/delete/remove) is denied by default — it raises
+            `PermissionError` naming the exact entry to pass here — since a
+            sandboxed `await server.tool(...)` call bypasses the approval
+            hooks that gate direct MCP calls. Use "<server>.*" to allow every
+            side-effecting tool on one server. Omit for read-only code.
     """
     executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
 
@@ -376,6 +384,7 @@ async def execute_code(
         raw_cap=raw_cap,
         extra_pool=await _project_pool(ctx),
         per_call_timeout=per_call_timeout,
+        allow_side_effects=allow_side_effects,
     )
 
     lines = []

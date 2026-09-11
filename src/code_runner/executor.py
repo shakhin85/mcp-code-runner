@@ -197,6 +197,22 @@ DEFAULT_AUTO_LIMIT = 500
 DEFAULT_RAW_CAP = 262144  # 256 KB
 DEFAULT_PER_CALL_TIMEOUT = 30.0  # seconds per downstream tool-call; 0 disables
 
+# SHA-123: classify a downstream tool as side-effecting by a NAME token —
+# add/create/update/delete/remove, bounded by start/end or a separator
+# (._-). Deny-by-default gate lives at the proxy choke point (_make_wrapper),
+# not in a hook, so `await bitrix.crm_deal_add(...)` from sandbox code can't
+# bypass it the way it bypasses the PreToolUse hooks on direct MCP calls.
+# Known gap: camelCase names with no separator before the verb
+# (`linear_createIssue`) are NOT matched — tracked for a later ticket.
+_SIDE_EFFECT_RE = re.compile(
+    r"(^|[._-])(add|create|update|delete|remove)([._-]|$)", re.IGNORECASE
+)
+
+
+def _is_side_effecting(tool_name: str) -> bool:
+    return bool(_SIDE_EFFECT_RE.search(tool_name))
+
+
 # Cap on the error text carried in an MCPToolError message. A misbehaving
 # backend can put a full traceback in an error result; keep it out of the
 # model's context while still showing enough to diagnose.
@@ -806,6 +822,7 @@ class _ToolNamespace:
         raw_cap: int = 0,
         pool: "_ToolCaller | None" = None,
         call_timeout: float = 0,
+        allowed_side_effects: list[str] | None = None,
     ):
         self._server_name = server_name
         self._session = session
@@ -816,6 +833,7 @@ class _ToolNamespace:
         self._recorder = recorder
         self._raw_cap = raw_cap
         self._call_timeout = call_timeout
+        self._allowed_side_effects = set(allowed_side_effects or [])
         # Вызовы идут через пул, а не через захваченную при сборке сессию:
         # мёртвая/перезапущенная MCP-сессия так переподключается прозрачно
         # (MCPClientPool.call_tool = reconnect + один retry).
@@ -852,8 +870,22 @@ class _ToolNamespace:
         raw_cap = self._raw_cap
         caller = self._caller
         call_timeout = self._call_timeout
+        allowed = self._allowed_side_effects
 
         async def wrapper(**kwargs):
+            # SHA-123: deny-by-default gate on side-effecting tools — checked
+            # before anything else in the call (no stats/recorder, no
+            # downstream, no timeout block) so a refused call leaves no trace
+            # of having been attempted.
+            if (
+                _is_side_effecting(tool_name)
+                and f"{server}.{tool_name}" not in allowed
+                and f"{server}.*" not in allowed
+            ):
+                raise PermissionError(
+                    f"{server}.{tool_name} is side-effecting; pass "
+                    f'allow_side_effects=["{server}.{tool_name}"] to execute_code'
+                )
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
             if limit_applied and self._stats is not None:
                 self._stats["auto_limit_hits"] += 1
@@ -1024,6 +1056,7 @@ class CodeExecutor:
         stats: dict[str, int] | None,
         raw_cap: int,
         call_timeout: float,
+        allow_side_effects: list[str] | None = None,
     ) -> dict[str, "_ToolNamespace"]:
         """One MCP proxy object per connected server. Shared by the in-process
         namespace and the subprocess broker (which dispatches remote calls to
@@ -1040,6 +1073,7 @@ class CodeExecutor:
                 raw_cap=raw_cap,
                 pool=self.pool,
                 call_timeout=call_timeout,
+                allowed_side_effects=allow_side_effects,
             )
         # Project-level servers (daemon mode): only names the global pool
         # doesn't already serve — global wins on collision.
@@ -1057,6 +1091,7 @@ class CodeExecutor:
                     raw_cap=raw_cap,
                     pool=extra,
                     call_timeout=call_timeout,
+                    allowed_side_effects=allow_side_effects,
                 )
         return proxies
 
@@ -1067,6 +1102,7 @@ class CodeExecutor:
         stats: dict[str, int] | None = None,
         raw_cap: int = 0,
         call_timeout: float = 0,
+        allow_side_effects: list[str] | None = None,
     ) -> tuple[dict[str, Any], set[str]]:
         # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
         safe_builtins = {
@@ -1101,7 +1137,9 @@ class CodeExecutor:
                 raise WorkspaceError("open() requires session_id")
             namespace["open"] = _denied
 
-        namespace.update(self._build_proxies(auto_limit, stats, raw_cap, call_timeout))
+        namespace.update(
+            self._build_proxies(auto_limit, stats, raw_cap, call_timeout, allow_side_effects)
+        )
 
         if self.skills is not None:
             namespace["skills"] = self.skills
@@ -1146,6 +1184,7 @@ class CodeExecutor:
         raw_cap: int,
         stats: dict[str, int],
         call_timeout: float,
+        allow_side_effects: list[str] | None = None,
     ) -> tuple[bool, str, str | None]:
         """Run user code in a fresh rlimited child; proxy its MCP calls back here.
 
@@ -1157,7 +1196,7 @@ class CodeExecutor:
         """
         from . import subprocess_worker  # lazy: the worker imports from this module
 
-        proxies = self._build_proxies(auto_limit, stats, raw_cap, call_timeout)
+        proxies = self._build_proxies(auto_limit, stats, raw_cap, call_timeout, allow_side_effects)
         servers = [
             {"py_name": py_name, "tools": [n.replace("-", "_") for n in proxy._tools]}
             for py_name, proxy in proxies.items()
@@ -1268,6 +1307,7 @@ class CodeExecutor:
         raw_cap: int = DEFAULT_RAW_CAP,
         extra_pool=None,
         per_call_timeout: float = DEFAULT_PER_CALL_TIMEOUT,
+        allow_side_effects: list[str] | None = None,
     ) -> dict[str, Any]:
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
@@ -1277,7 +1317,7 @@ class CodeExecutor:
             try:
                 return await self._execute_locked(
                     code, timeout, max_output_bytes, session_id, auto_limit, raw_cap,
-                    per_call_timeout,
+                    per_call_timeout, allow_side_effects,
                 )
             finally:
                 self._extra_pool = None
@@ -1291,6 +1331,7 @@ class CodeExecutor:
         auto_limit: int,
         raw_cap: int = DEFAULT_RAW_CAP,
         per_call_timeout: float = DEFAULT_PER_CALL_TIMEOUT,
+        allow_side_effects: list[str] | None = None,
     ) -> dict[str, Any]:
         start_exec = time.monotonic()
         # Fingerprint the code as the caller sent it, before _transform_last_expr
@@ -1359,7 +1400,8 @@ class CodeExecutor:
         if self._isolation == "subprocess" and _SUBPROCESS_AVAILABLE:
             try:
                 success, output, error = await self._run_in_subprocess(
-                    code, session_id, timeout, auto_limit, raw_cap, stats, per_call_timeout
+                    code, session_id, timeout, auto_limit, raw_cap, stats, per_call_timeout,
+                    allow_side_effects,
                 )
             except Exception as e:
                 return finalize(
@@ -1369,7 +1411,7 @@ class CodeExecutor:
             return finalize(success, output, error)
 
         namespace, framework_names = self._build_namespace(
-            session_id, auto_limit, stats, raw_cap, per_call_timeout
+            session_id, auto_limit, stats, raw_cap, per_call_timeout, allow_side_effects
         )
 
         output_lines: list[str] = []

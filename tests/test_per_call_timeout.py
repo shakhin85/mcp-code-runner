@@ -47,6 +47,9 @@ def test_per_call_timeout_names_server_and_tool(isolation):
         "await forgetful.create_memory(title='x')",
         timeout=20,
         per_call_timeout=0.5,
+        # SHA-123: create_memory is side-effecting and denied by default;
+        # this test is about per-call timeout, not the gate, so opt in.
+        allow_side_effects=["forgetful.create_memory"],
     ))
     elapsed = time.monotonic() - start
     assert result["success"] is False
@@ -65,7 +68,10 @@ def test_per_call_timeout_is_catchable_and_run_continues(isolation):
         "    print('caught', type(e).__name__)\n"
         "print('after')"
     )
-    result = asyncio.run(ex.execute(code, timeout=20, per_call_timeout=0.3))
+    result = asyncio.run(ex.execute(
+        code, timeout=20, per_call_timeout=0.3,
+        allow_side_effects=["forgetful.create_memory"],
+    ))
     assert result["success"] is True, result["error"]
     assert "caught TimeoutError" in result["output"]
     assert "after" in result["output"]
@@ -79,6 +85,7 @@ def test_execute_timeout_stays_upper_bound_over_per_call_timeout(isolation):
         "await forgetful.create_memory(title='x')",
         timeout=1,
         per_call_timeout=30,
+        allow_side_effects=["forgetful.create_memory"],
     ))
     elapsed = time.monotonic() - start
     assert result["success"] is False
