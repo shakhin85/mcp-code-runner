@@ -1,17 +1,18 @@
 # Task: updated_code_runner
 
 **Status:** in_progress
+**Done means:** GH_TOKEN больше не перебивает рабочий логин gh: gh auth status без ошибок, git по HTTPS и gh api работают
 **Linear:** —
-**Updated:** 2026-08-02T09:19:53.556426+00:00
+**Updated:** 2026-09-11T10:57:38.568921+00:00
 
 ## Steps
 (no steps)
 
 ## Checkpoint
-relay iter4/5: judge GREEN — все 6 DONE закрыты; 1ae555d HINT-ы NameError/import/<=N-валидаторов + регресс-тесты, 1054eb7 ruff 34→0; gap-таблица, 6 строк бэклога, bench «после»; деплой ok TasksCurrent=165
+запушено: updated_code_runner f38cda2..487b9d8 (origin переведён на SSH — HTTPS падал на невалидном GH_TOKEN), ~/.claude 40e8b8b..e22893b; uncommitted в ~/.claude (settings.json, fpa-interview.md, workflows/*.js, .mcp-registry.md) не трогал
 
 ## Next
-iter5 (полировка): замер TypeError/NameError-частоты после HINT-ов на 7д-окне; SQL-сценарий bench из проекта с postgres; опц. Linear-комментарий
+SHA-123 #123: approval-gate на *.add/*.update/*.delete/*.create внутри execute_code — вторая relay-цепочка
 
 ## Refs
 - episodes: —

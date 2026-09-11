@@ -14,3 +14,5 @@ models/
 
 .task-record.json
 CONTEXT.md.bak
+.task-record.log.jsonl
+.task-record.log.jsonl.lock
