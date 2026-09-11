@@ -14,7 +14,7 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 from weakref import WeakKeyDictionary
 
@@ -294,7 +294,9 @@ async def list_available_tools(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def search_tools(query: str, ctx: Context, detail: str = "full") -> str:
+async def search_tools(
+    query: str, ctx: Context, detail: Literal["name", "desc", "full"] = "full"
+) -> str:
     """
     Search for MCP tools by keyword. Returns Python stubs for matching tools.
 

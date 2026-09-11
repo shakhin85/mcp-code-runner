@@ -4,10 +4,12 @@
 поиска, чтобы широкий запрос не отдавал полные стабы всех совпавших тулов.
 """
 
+import asyncio
+
 import pytest
 from mcp.types import Tool
 
-from code_runner.server import _search_tools_logic
+from code_runner.server import _search_tools_logic, mcp
 
 TOOLS = {
     "postgres-lime": [
@@ -57,6 +59,12 @@ def test_detail_levels_grow_monotonically():
     levels = ("name", "desc", "full")
     sizes = [len(_search_tools_logic("sql", TOOLS, PY_NAMES, detail=d)) for d in levels]
     assert sizes == sorted(sizes) and len(set(sizes)) == 3
+
+
+def test_tool_schema_exposes_detail_enum():
+    tools = asyncio.run(mcp.list_tools())
+    schema = next(t for t in tools if t.name == "search_tools").inputSchema
+    assert schema["properties"]["detail"]["enum"] == ["name", "desc", "full"]
 
 
 def test_unknown_detail_rejected():
