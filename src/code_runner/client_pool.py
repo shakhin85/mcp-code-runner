@@ -13,11 +13,20 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.types import Tool
 
 from .config_reader import ServerConfig, load_server_configs, server_name_to_py
+from .late_response import late_response_logger
 
 logger = logging.getLogger(__name__)
 
 CONNECTION_TIMEOUT = 30  # seconds per server
 SHUTDOWN_TIMEOUT = 15  # seconds to wait for one server host to close
+
+
+def _new_session(read, write, server_name: str) -> ClientSession:
+    """Единственная точка создания downstream-сессии (stdio и http).
+
+    Per-call таймаут бросает вызов, а downstream отвечает позже — такой ответ
+    уходит в журнал warn, сессия остаётся рабочей."""
+    return ClientSession(read, write, message_handler=late_response_logger(server_name))
 
 
 class _ServerHost:
@@ -164,7 +173,7 @@ class MCPClientPool:
                 env=merged_env,
             )
             read, write = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(read, write))
+            session = await stack.enter_async_context(_new_session(read, write, cfg.name))
             await session.initialize()
             result = await session.list_tools()
             return session, result.tools
@@ -186,7 +195,7 @@ class MCPClientPool:
                     sse_client(cfg.url)
                 )
 
-            session = await stack.enter_async_context(ClientSession(read, write))
+            session = await stack.enter_async_context(_new_session(read, write, cfg.name))
             await session.initialize()
             result = await session.list_tools()
             return session, result.tools

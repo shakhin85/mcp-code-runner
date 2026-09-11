@@ -24,6 +24,7 @@ from mcp.types import Tool
 from .client_pool import MCPClientPool
 from .config_reader import load_server_configs, server_name_to_py
 from .executor import CodeExecutor
+from .late_response import drop_cancelled_responses
 from .metrics import recorder_from_env, summarize_errors
 from .project_pools import STARTUP_TIMEOUT, ProjectPoolRegistry, _PoolHost
 from .schema_gen import generate_server_overview, generate_stubs_for_server
@@ -118,6 +119,8 @@ async def lifespan(server: FastMCP):
 
 
 mcp = FastMCP("code-runner", lifespan=lifespan)
+# SHA-129: ответ на отменённый (TaskStop) запрос рвал канал клиента.
+drop_cancelled_responses(mcp._mcp_server)
 
 # client session -> resolved project dir (or None if roots недоступны).
 # Roots запрашиваются у клиента один раз на MCP-сессию.
