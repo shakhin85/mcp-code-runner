@@ -195,6 +195,7 @@ DEFAULT_AUTO_LIMIT = 500
 # (not parsed into objects) with a marker, forcing the model to narrow the query.
 # Pass 0 to disable.
 DEFAULT_RAW_CAP = 262144  # 256 KB
+DEFAULT_PER_CALL_TIMEOUT = 30.0  # seconds per downstream tool-call; 0 disables
 
 # Cap on the error text carried in an MCPToolError message. A misbehaving
 # backend can put a full traceback in an error result; keep it out of the
@@ -736,6 +737,7 @@ class _ToolNamespace:
         recorder: "MetricsRecorder | None" = None,
         raw_cap: int = 0,
         pool: "_ToolCaller | None" = None,
+        call_timeout: float = 0,
     ):
         self._server_name = server_name
         self._session = session
@@ -745,6 +747,7 @@ class _ToolNamespace:
         self._stats = stats
         self._recorder = recorder
         self._raw_cap = raw_cap
+        self._call_timeout = call_timeout
         # Вызовы идут через пул, а не через захваченную при сборке сессию:
         # мёртвая/перезапущенная MCP-сессия так переподключается прозрачно
         # (MCPClientPool.call_tool = reconnect + один retry).
@@ -780,6 +783,7 @@ class _ToolNamespace:
         server = self._server_name
         raw_cap = self._raw_cap
         caller = self._caller
+        call_timeout = self._call_timeout
 
         async def wrapper(**kwargs):
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
@@ -790,7 +794,19 @@ class _ToolNamespace:
             error: str | None = None
             out_bytes = 0
             try:
-                result = await caller.call_tool(server, tool_name, kwargs)
+                # SHA-129: downstream, который принял вызов и молчит, иначе держал
+                # execute_code до общего таймаута. expired() отличает наш дедлайн
+                # от TimeoutError, поднятого самим downstream.
+                deadline = asyncio.timeout(call_timeout or None)
+                try:
+                    async with deadline:
+                        result = await caller.call_tool(server, tool_name, kwargs)
+                except TimeoutError:
+                    if not deadline.expired():
+                        raise
+                    raise TimeoutError(
+                        f"{server}.{tool_name} > {call_timeout:g}s"
+                    ) from None
                 texts = []
                 for content in result.content:
                     if hasattr(content, "text"):
@@ -939,6 +955,7 @@ class CodeExecutor:
         auto_limit: int,
         stats: dict[str, int] | None,
         raw_cap: int,
+        call_timeout: float,
     ) -> dict[str, "_ToolNamespace"]:
         """One MCP proxy object per connected server. Shared by the in-process
         namespace and the subprocess broker (which dispatches remote calls to
@@ -954,6 +971,7 @@ class CodeExecutor:
                 recorder=self.recorder,
                 raw_cap=raw_cap,
                 pool=self.pool,
+                call_timeout=call_timeout,
             )
         # Project-level servers (daemon mode): only names the global pool
         # doesn't already serve — global wins on collision.
@@ -970,6 +988,7 @@ class CodeExecutor:
                     recorder=self.recorder,
                     raw_cap=raw_cap,
                     pool=extra,
+                    call_timeout=call_timeout,
                 )
         return proxies
 
@@ -979,6 +998,7 @@ class CodeExecutor:
         auto_limit: int = 0,
         stats: dict[str, int] | None = None,
         raw_cap: int = 0,
+        call_timeout: float = 0,
     ) -> tuple[dict[str, Any], set[str]]:
         # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
         safe_builtins = {
@@ -1013,7 +1033,7 @@ class CodeExecutor:
                 raise WorkspaceError("open() requires session_id")
             namespace["open"] = _denied
 
-        namespace.update(self._build_proxies(auto_limit, stats, raw_cap))
+        namespace.update(self._build_proxies(auto_limit, stats, raw_cap, call_timeout))
 
         if self.skills is not None:
             namespace["skills"] = self.skills
@@ -1057,6 +1077,7 @@ class CodeExecutor:
         auto_limit: int,
         raw_cap: int,
         stats: dict[str, int],
+        call_timeout: float,
     ) -> tuple[bool, str, str | None]:
         """Run user code in a fresh rlimited child; proxy its MCP calls back here.
 
@@ -1068,7 +1089,7 @@ class CodeExecutor:
         """
         from . import subprocess_worker  # lazy: the worker imports from this module
 
-        proxies = self._build_proxies(auto_limit, stats, raw_cap)
+        proxies = self._build_proxies(auto_limit, stats, raw_cap, call_timeout)
         servers = [
             {"py_name": py_name, "tools": [n.replace("-", "_") for n in proxy._tools]}
             for py_name, proxy in proxies.items()
@@ -1132,7 +1153,10 @@ class CodeExecutor:
                         wrapper = getattr(proxies[py_server], tool_attr)
                         value = await wrapper(**kwargs)
                         parent_conn.send(("resp", (req_id, "ok", value)))
-                    except BaseException as e:
+                    # Exception, не BaseException: CancelledError от общего
+                    # wait_for обязан пройти наверх, иначе отмена глоталась,
+                    # ошибка уходила в child, и таймаут execute_code не срабатывал.
+                    except Exception as e:
                         parent_conn.send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
                 elif tag == "done":
                     return body
@@ -1175,6 +1199,7 @@ class CodeExecutor:
         auto_limit: int = DEFAULT_AUTO_LIMIT,
         raw_cap: int = DEFAULT_RAW_CAP,
         extra_pool=None,
+        per_call_timeout: float = DEFAULT_PER_CALL_TIMEOUT,
     ) -> dict[str, Any]:
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
@@ -1183,7 +1208,8 @@ class CodeExecutor:
             self._extra_pool = extra_pool
             try:
                 return await self._execute_locked(
-                    code, timeout, max_output_bytes, session_id, auto_limit, raw_cap
+                    code, timeout, max_output_bytes, session_id, auto_limit, raw_cap,
+                    per_call_timeout,
                 )
             finally:
                 self._extra_pool = None
@@ -1196,6 +1222,7 @@ class CodeExecutor:
         session_id: str | None,
         auto_limit: int,
         raw_cap: int = DEFAULT_RAW_CAP,
+        per_call_timeout: float = DEFAULT_PER_CALL_TIMEOUT,
     ) -> dict[str, Any]:
         start_exec = time.monotonic()
         # Fingerprint the code as the caller sent it, before _transform_last_expr
@@ -1250,7 +1277,7 @@ class CodeExecutor:
         if self._isolation == "subprocess" and _SUBPROCESS_AVAILABLE:
             try:
                 success, output, error = await self._run_in_subprocess(
-                    code, session_id, timeout, auto_limit, raw_cap, stats
+                    code, session_id, timeout, auto_limit, raw_cap, stats, per_call_timeout
                 )
             except Exception as e:
                 return finalize(
@@ -1260,7 +1287,7 @@ class CodeExecutor:
             return finalize(success, output, error)
 
         namespace, framework_names = self._build_namespace(
-            session_id, auto_limit, stats, raw_cap
+            session_id, auto_limit, stats, raw_cap, per_call_timeout
         )
 
         output_lines: list[str] = []
@@ -1320,6 +1347,9 @@ class CodeExecutor:
         # (which never yield to the event loop, making asyncio.wait_for
         # ineffective) can still be interrupted at the OS level.
         alarm_armed = _arm_sandbox_alarm(timeout + 0.5)
+        # expired() отличает общий дедлайн от TimeoutError изнутри user-кода
+        # (per-call таймаут downstream-вызова): тот идёт как обычная ошибка.
+        deadline = asyncio.timeout(timeout)
 
         try:
             # eval() on a top-level-await code object returns a coroutine if
@@ -1327,7 +1357,8 @@ class CodeExecutor:
             # runs during eval and None is returned.
             maybe_coro = eval(compiled, namespace)
             if asyncio.iscoroutine(maybe_coro):
-                await asyncio.wait_for(maybe_coro, timeout=timeout)
+                async with deadline:
+                    await maybe_coro
 
             output = "".join(output_lines)
             result = namespace.pop(_RESULT_SENTINEL, None)
@@ -1348,13 +1379,13 @@ class CodeExecutor:
                 "".join(output_lines),
                 f"Execution timed out after {timeout}s (CPU-bound loop detected by SIGALRM)",
             )
-        except TimeoutError:
-            return finalize(
-                False,
-                "".join(output_lines),
-                f"Execution timed out after {timeout}s",
-            )
         except Exception as e:
+            if isinstance(e, TimeoutError) and deadline.expired():
+                return finalize(
+                    False,
+                    "".join(output_lines),
+                    f"Execution timed out after {timeout}s",
+                )
             return finalize(
                 False,
                 "".join(output_lines),

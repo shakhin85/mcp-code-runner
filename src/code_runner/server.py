@@ -291,6 +291,7 @@ async def execute_code(
     session_id: str | None = None,
     auto_limit: int = 500,
     raw_cap: int = 262144,
+    per_call_timeout: float = 30.0,
 ) -> str:
     """
     Execute Python code with access to all connected MCP tools.
@@ -328,6 +329,11 @@ async def execute_code(
             parsed into dicts/lists) with a marker — narrow columns or aggregate
             and re-run. Use print_rows(result) for a compact head/tail preview
             instead of print(result). Pass 0 to disable.
+        per_call_timeout: Seconds each single MCP tool call may take (default 30).
+            A downstream that never answers raises
+            `TimeoutError: <server>.<tool> > 30s` in user code instead of
+            holding the whole run. `timeout` stays the upper bound. Pass 0 to
+            disable.
     """
     executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
 
@@ -339,6 +345,7 @@ async def execute_code(
         auto_limit=auto_limit,
         raw_cap=raw_cap,
         extra_pool=await _project_pool(ctx),
+        per_call_timeout=per_call_timeout,
     )
 
     lines = []
