@@ -109,6 +109,13 @@ def test_late_response_to_cancelled_request_is_dropped(caplog):
     assert f"late_response: dropped reply to cancelled request id={HANG_ID}" in caplog.text
 
 
+def test_daemon_server_runs_with_late_response_filter():
+    """Боевой FastMCP (stdio и streamable-http идут через один _mcp_server.run)."""
+    from code_runner.server import mcp
+
+    assert mcp._mcp_server.run.__name__ == "run_without_cancelled_replies"
+
+
 def test_downstream_late_response_on_unknown_id_keeps_session(caplog):
     """Per-call таймаут бросил запрос; downstream ответил позже на неизвестный id."""
     caplog.set_level(logging.WARNING, logger="code_runner.late_response")
