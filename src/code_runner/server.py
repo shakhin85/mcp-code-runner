@@ -177,12 +177,34 @@ def _overview_logic(
     return generate_server_overview(tools_by_server, py_name_map)
 
 
+SEARCH_DETAILS = ("name", "desc", "full")
+
+
+def _render_matches(py_name: str, tools: list[Tool], detail: str) -> str:
+    """One server section at the requested detail level."""
+    if detail == "full":
+        return generate_stubs_for_server(py_name, tools)
+    lines = [f"# === {py_name} ({len(tools)} tools) ==="]
+    for tool in tools:
+        ref = f"{py_name}.{tool.name.replace('-', '_')}"
+        if detail == "desc":
+            desc = (tool.description or "").strip().split("\n")[0]
+            if len(desc) > 120:
+                desc = desc[:117] + "..."
+            ref = f"{ref} — {desc}" if desc else ref
+        lines.append(ref)
+    return "\n".join(lines)
+
+
 def _search_tools_logic(
     query: str,
     tools_by_server: dict[str, list[Tool]],
     py_name_map: dict[str, str],
+    detail: str = "full",
 ) -> str:
     """Search tools by keyword. Extracted for testing."""
+    if detail not in SEARCH_DETAILS:
+        raise ValueError(f"detail must be one of {', '.join(SEARCH_DETAILS)}, got {detail!r}")
     if not query.strip():
         return _overview_logic(tools_by_server, py_name_map)
 
@@ -202,7 +224,7 @@ def _search_tools_logic(
     sections = []
     for server_name, tools in matches.items():
         py_name = server_name_to_py(server_name)
-        sections.append(generate_stubs_for_server(py_name, tools))
+        sections.append(_render_matches(py_name, tools, detail))
 
     return "\n\n".join(sections)
 
@@ -272,17 +294,20 @@ async def list_available_tools(ctx: Context) -> str:
 
 
 @mcp.tool()
-async def search_tools(query: str, ctx: Context) -> str:
+async def search_tools(query: str, ctx: Context, detail: str = "full") -> str:
     """
-    Search for MCP tools by keyword. Returns full Python stubs for matching tools.
+    Search for MCP tools by keyword. Returns Python stubs for matching tools.
 
     Args:
         query: Space-separated keywords. All keywords must match tool name or description.
                Examples: "sql query", "read file", "documentation"
+        detail: "name" — only `server.tool` refs; "desc" — refs plus the first
+               description line; "full" (default) — full stubs with arguments.
+               Broad query → start with "name", then "full" on the narrowed one.
     """
     pool: MCPClientPool = ctx.request_context.lifespan_context["pool"]
     py_name_map, tools_by_server = await _merged_views(ctx, pool)
-    return _search_tools_logic(query, tools_by_server, py_name_map)
+    return _search_tools_logic(query, tools_by_server, py_name_map, detail)
 
 
 @mcp.tool()
