@@ -12,10 +12,14 @@ executor and the namespace proxy is handled in Task 5.
 from __future__ import annotations
 
 import builtins as _builtins
+import functools
+import inspect
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from code_runner.skill_status import record_outcome
 
 
 @dataclass(frozen=True)
@@ -117,20 +121,28 @@ class SkillProxy:
     the framework namespace.
     """
 
-    __slots__ = ("_name", "_callables")
+    __slots__ = ("_name", "_callables", "_calls")
 
-    def __init__(self, name: str, callables: dict[str, Any]) -> None:
+    def __init__(
+        self, name: str, callables: dict[str, Any], skill_dir: Path | None = None
+    ) -> None:
         self._name = name
+        # Raw functions: find_callables reads their real signatures.
         self._callables = callables
+        # What user code gets: wrapped once, so `skills.x.f is skills.x.f`.
+        self._calls = (
+            {k: _with_outcome(v, skill_dir) for k, v in callables.items()}
+            if skill_dir is not None else callables
+        )
 
     def __getattr__(self, attr: str) -> Any:
         if attr.startswith("_"):
             raise AttributeError(attr)
-        if attr not in self._callables:
+        if attr not in self._calls:
             raise AttributeError(
                 f"skill {self._name!r} has no callable {attr!r}"
             )
-        return self._callables[attr]
+        return self._calls[attr]
 
     def __dir__(self):
         return list(self._callables)
@@ -138,6 +150,40 @@ class SkillProxy:
     def __repr__(self):
         fns = ", ".join(sorted(self._callables))
         return f"<SkillProxy {self._name} fns=[{fns}]>"
+
+
+def _with_outcome(fn: Any, skill_dir: Path) -> Any:
+    """Wrap a skill callable so each call's outcome lands in status.json.
+
+    Success = no exception (async: after the await). Exceptions from the skill
+    and from recording both propagate. An async `fn` is called eagerly and only
+    the await is deferred: bad arguments must raise TypeError at the call site,
+    as the bare function does, so the executor's signature HINT still sees it.
+    """
+    is_async = inspect.iscoroutinefunction(fn)
+
+    async def settle(coro: Any) -> Any:
+        try:
+            result = await coro
+        except Exception:
+            record_outcome(skill_dir, ok=False)
+            raise
+        record_outcome(skill_dir, ok=True)
+        return result
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            result = fn(*args, **kwargs)
+        except Exception:
+            record_outcome(skill_dir, ok=False)
+            raise
+        if is_async:
+            return settle(result)
+        record_outcome(skill_dir, ok=True)
+        return result
+
+    return wrapper
 
 
 class _BrokenSkill:
@@ -205,7 +251,7 @@ class SkillsNamespace:
                 k: v for k, v in module_ns.items()
                 if callable(v) and not k.startswith("_")
             }
-            self._proxies[name] = SkillProxy(name, callables)
+            self._proxies[name] = SkillProxy(name, callables, spec.path)
 
     def find_callables(self, fn_name: str) -> list[tuple[str, Any]]:
         """All loaded skill callables named `fn_name`, as (skill_name, fn).
