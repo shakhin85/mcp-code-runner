@@ -1,18 +1,18 @@
 # Task: updated_code_runner
 
 **Status:** in_progress
-**Done means:** GH_TOKEN больше не перебивает рабочий логин gh: gh auth status без ошибок, git по HTTPS и gh api работают
+**Done means:** SHA-123 #123: вызов *.add/*.update/*.delete/*.create из execute_code без явного подтверждения невозможен механизмом, а не текстом; тесты зелёные
 **Linear:** —
-**Updated:** 2026-09-11T10:57:38.568921+00:00
+**Updated:** 2026-09-11T12:49:37.871774+00:00
 
 ## Steps
 (no steps)
 
 ## Checkpoint
-запушено: updated_code_runner f38cda2..487b9d8 (origin переведён на SSH — HTTPS падал на невалидном GH_TOKEN), ~/.claude 40e8b8b..e22893b; uncommitted в ~/.claude (settings.json, fpa-interview.md, workflows/*.js, .mcp-registry.md) не трогал
+SHA-123 #123 закрыт: 896760f, гейт в _make_wrapper, демон перезапущен; щели camelCase/диспетчеры → backlog #125
 
 ## Next
-SHA-123 #123: approval-gate на *.add/*.update/*.delete/*.create внутри execute_code — вторая relay-цепочка
+бэклог #124 execution-history или #125 щели гейта; SHA-135/136 без цепочки
 
 ## Refs
 - episodes: —
