@@ -3,7 +3,7 @@
 **Status:** in_progress
 **Done means:** SHA-123 #123: вызов *.add/*.update/*.delete/*.create из execute_code без явного подтверждения невозможен механизмом, а не текстом; тесты зелёные
 **Linear:** —
-**Updated:** 2026-09-11T12:49:37.871774+00:00
+**Updated:** 2026-09-14T14:01:39.877013+00:00
 
 ## Steps
 (no steps)
