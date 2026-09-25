@@ -202,15 +202,28 @@ DEFAULT_PER_CALL_TIMEOUT = 30.0  # seconds per downstream tool-call; 0 disables
 # (._-). Deny-by-default gate lives at the proxy choke point (_make_wrapper),
 # not in a hook, so `await bitrix.crm_deal_add(...)` from sandbox code can't
 # bypass it the way it bypasses the PreToolUse hooks on direct MCP calls.
-# Known gap: camelCase names with no separator before the verb
-# (`linear_createIssue`) are NOT matched — tracked for a later ticket.
+# SHA-125: a camelCase boundary counts as a separator (`linear_createIssue`,
+# `deleteIssue`) — it is split to `_` before matching.
 _SIDE_EFFECT_RE = re.compile(
     r"(^|[._-])(add|create|update|delete|remove)([._-]|$)", re.IGNORECASE
 )
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+# SHA-125: generic dispatchers carry the real operation in an argument, so the
+# gate classifies (and allow-lists) the dispatched name, not the dispatcher's.
+# tool name -> argument holding the operation name.
+_DISPATCHER_ARGS = {"execute_forgetful_tool": "tool_name"}
 
 
 def _is_side_effecting(tool_name: str) -> bool:
-    return bool(_SIDE_EFFECT_RE.search(tool_name))
+    return bool(_SIDE_EFFECT_RE.search(_CAMEL_BOUNDARY_RE.sub("_", tool_name)))
+
+
+def _gated_name(tool_name: str, kwargs: dict) -> str:
+    """Name the approval gate classifies: the dispatched operation for a
+    generic dispatcher, the tool itself otherwise."""
+    arg = _DISPATCHER_ARGS.get(tool_name)
+    return str(kwargs.get(arg, tool_name)) if arg else tool_name
 
 
 # Cap on the error text carried in an MCPToolError message. A misbehaving
@@ -877,14 +890,15 @@ class _ToolNamespace:
             # before anything else in the call (no stats/recorder, no
             # downstream, no timeout block) so a refused call leaves no trace
             # of having been attempted.
+            gated = _gated_name(tool_name, kwargs)
             if (
-                _is_side_effecting(tool_name)
-                and f"{server}.{tool_name}" not in allowed
+                _is_side_effecting(gated)
+                and f"{server}.{gated}" not in allowed
                 and f"{server}.*" not in allowed
             ):
                 raise PermissionError(
-                    f"{server}.{tool_name} is side-effecting; pass "
-                    f'allow_side_effects=["{server}.{tool_name}"] to execute_code'
+                    f"{server}.{gated} is side-effecting; pass "
+                    f'allow_side_effects=["{server}.{gated}"] to execute_code'
                 )
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
             if limit_applied and self._stats is not None:

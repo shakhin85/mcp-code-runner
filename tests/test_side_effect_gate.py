@@ -117,17 +117,15 @@ def test_read_tool_is_never_gated(isolation):
 
 
 def test_regex_matches_name_tokens_not_substrings():
-    """Documents the actual behavior of _SIDE_EFFECT_RE, including its gap.
+    """Documents the actual behavior of _SIDE_EFFECT_RE.
 
-    Matched: a verb bounded by start/end or a `._-` separator.
-    NOT matched: `execute_sql`/`query_memory` (no verb token at all), or a
-    verb glued into camelCase with no separator (`linear_createIssue`'s
-    verb-looking substring is "createIssue", not "create" — known gap,
-    called out in the comment on _SIDE_EFFECT_RE for a later ticket).
+    Matched: a verb bounded by start/end, a `._-` separator, or a camelCase
+    boundary (SHA-125: `linear_createIssue`).
+    NOT matched: `execute_sql`/`query_memory` (no verb token at all).
     """
     assert _is_side_effecting("crm.deal.add") is True
     assert _is_side_effecting("linear.delete_issue") is True
     assert _is_side_effecting("create_memory") is True
-    assert _is_side_effecting("linear_createIssue") is False
+    assert _is_side_effecting("linear_createIssue") is True
     assert _is_side_effecting("query_memory") is False
     assert _is_side_effecting("execute_sql") is False
