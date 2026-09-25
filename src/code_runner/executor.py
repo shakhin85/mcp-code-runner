@@ -82,6 +82,10 @@ _SAFE_ASYNCIO.wait_for = asyncio.wait_for
 # `print(type(e).__name__)` — the ordinary way to name an exception — to be
 # rewritten, which is friction with no security to show for it.
 ALLOWED_DUNDER_ATTRS = frozenset({"__name__"})
+# namedtuple public API — the only `_`-prefixed attributes sandbox code gets.
+_ALLOWED_PRIVATE_ATTRS = frozenset(
+    {"_asdict", "_replace", "_fields", "_field_defaults", "_make"}
+)
 
 SAFE_MODULES = {
     "re": re,
@@ -528,6 +532,21 @@ def validate_code(code: str) -> None:
         ):
             raise ValueError(
                 f"dunder attribute access is not allowed: {node.attr}"
+            )
+
+        # SHA-122: private attributes reach framework state — under in-process
+        # isolation `srv._caller.configs` / `srv._session.headers` exposed
+        # downstream auth headers and env tokens. namedtuple's public API is
+        # the one `_`-prefixed surface sandbox code legitimately needs.
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr.startswith("_")
+            and not node.attr.startswith("__")
+            and node.attr not in _ALLOWED_PRIVATE_ATTRS
+        ):
+            raise ValueError(
+                f"private attribute access is not allowed: {node.attr} — "
+                "blocked: `_`-attributes reach framework state (credentials)"
             )
 
 

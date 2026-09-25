@@ -84,6 +84,9 @@ sandbox stops being a matter of faith.
   and a scrubbed environment; MCP calls are proxied back to the parent (live sessions never
   reach the child). An escape, OOM, or CPU loop is confined to a killable process, not the
   server. Persisted session vars must be picklable to cross the process boundary.
+  Downstream credentials (pool configs, session headers) never reach the child, so
+  only subprocess keeps them out of user code: in-process, `str.format` resolves
+  `_`-attributes at runtime past the AST rule (SHA-122, xfail in tests).
   The child is at feature parity with the in-process path — skills, prelude aliases,
   workspace `open()`, and the error HINTs all work there; only the str-result HINT is
   applied parent-side, since it needs the run's tool-call stats.
