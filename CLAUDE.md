@@ -95,6 +95,7 @@ sandbox stops being a matter of faith.
 ## Opt-in features
 
 - **Workspace** — set `session_id` to enable `open()` inside sandbox; files live in `~/.cache/code-runner/workspace/<session_id>/`. Cleared on session eviction (TTL or LRU).
+  Every proxied tool call of the session appends a line (server, tool, args ≤500 chars, duration, bytes, error) to `calls.jsonl` there — `open('calls.jsonl')` gives the repro of a hang (SHA-124).
 - **Skills** — drop a directory into `~/.claude/code-runner-skills/<name>/` containing `script.py` + `SKILL.md`; functions become `skills.<name>.<fn>` in the sandbox. Use `save_skill` MCP tool to create one from inside `execute_code`.
 
 ## Installing bundled skills

@@ -230,6 +230,20 @@ def _gated_name(tool_name: str, kwargs: dict) -> str:
     return str(kwargs.get(arg, tool_name)) if arg else tool_name
 
 
+# SHA-124: per-session journal of proxied tool calls — the repro for a
+# downstream hang that metrics.jsonl aggregates can't give. Lives in the
+# session workspace, so sandbox code reads it with open("calls.jsonl").
+JOURNAL_NAME = "calls.jsonl"
+_JOURNAL_ARGS_MAX = 500
+
+
+def _journal_args(kwargs: dict) -> dict | str:
+    text = json.dumps(kwargs, ensure_ascii=False, default=repr)
+    if len(text) <= _JOURNAL_ARGS_MAX:
+        return json.loads(text)
+    return text[:_JOURNAL_ARGS_MAX] + "…[truncated]"
+
+
 # Cap on the error text carried in an MCPToolError message. A misbehaving
 # backend can put a full traceback in an error result; keep it out of the
 # model's context while still showing enough to diagnose.
@@ -855,6 +869,7 @@ class _ToolNamespace:
         pool: "_ToolCaller | None" = None,
         call_timeout: float = 0,
         allowed_side_effects: list[str] | None = None,
+        journal: Path | None = None,
     ):
         self._server_name = server_name
         self._session = session
@@ -866,6 +881,7 @@ class _ToolNamespace:
         self._raw_cap = raw_cap
         self._call_timeout = call_timeout
         self._allowed_side_effects = set(allowed_side_effects or [])
+        self._journal = journal
         # Вызовы идут через пул, а не через захваченную при сборке сессию:
         # мёртвая/перезапущенная MCP-сессия так переподключается прозрачно
         # (MCPClientPool.call_tool = reconnect + один retry).
@@ -1008,6 +1024,24 @@ class _ToolNamespace:
                             "limit_applied": limit_applied,
                             "error": error,
                         })
+                if self._journal is not None:
+                    row = {
+                        "ts": datetime.datetime.now(datetime.UTC).isoformat(),
+                        "server": server,
+                        "tool": tool_name,
+                        "args": _journal_args(kwargs),
+                        "duration_ms": round((time.monotonic() - start) * 1000, 2),
+                        "bytes": out_bytes,
+                        "success": success,
+                        "error": error,
+                    }
+                    # Same contract as the recorder: a journal write never
+                    # fails the call it describes (e.g. workspace evicted).
+                    with (
+                        contextlib.suppress(OSError),
+                        open(self._journal, "a", encoding="utf-8") as f,
+                    ):
+                        f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
         wrapper.__name__ = tool_name
         wrapper.__qualname__ = f"{server}.{tool_name}"
@@ -1090,10 +1124,17 @@ class CodeExecutor:
         raw_cap: int,
         call_timeout: float,
         allow_side_effects: list[str] | None = None,
+        session_id: str | None = None,
     ) -> dict[str, "_ToolNamespace"]:
         """One MCP proxy object per connected server. Shared by the in-process
         namespace and the subprocess broker (which dispatches remote calls to
         these same objects)."""
+        # The journal exists iff the session has a workspace: an id the
+        # workspace rejects still runs (session vars), open() refuses lazily.
+        journal = None
+        if session_id is not None:
+            with contextlib.suppress(WorkspaceError):
+                journal = self.workspace.resolve_path(session_id, JOURNAL_NAME)
         proxies: dict[str, _ToolNamespace] = {}
         for server_name, session in self.pool.sessions.items():
             py_name = server_name_to_py(server_name)
@@ -1107,6 +1148,7 @@ class CodeExecutor:
                 pool=self.pool,
                 call_timeout=call_timeout,
                 allowed_side_effects=allow_side_effects,
+                journal=journal,
             )
         # Project-level servers (daemon mode): only names the global pool
         # doesn't already serve — global wins on collision.
@@ -1125,6 +1167,7 @@ class CodeExecutor:
                     pool=extra,
                     call_timeout=call_timeout,
                     allowed_side_effects=allow_side_effects,
+                    journal=journal,
                 )
         return proxies
 
@@ -1171,7 +1214,9 @@ class CodeExecutor:
             namespace["open"] = _denied
 
         namespace.update(
-            self._build_proxies(auto_limit, stats, raw_cap, call_timeout, allow_side_effects)
+            self._build_proxies(
+                auto_limit, stats, raw_cap, call_timeout, allow_side_effects, session_id
+            )
         )
 
         if self.skills is not None:
@@ -1229,7 +1274,9 @@ class CodeExecutor:
         """
         from . import subprocess_worker  # lazy: the worker imports from this module
 
-        proxies = self._build_proxies(auto_limit, stats, raw_cap, call_timeout, allow_side_effects)
+        proxies = self._build_proxies(
+                auto_limit, stats, raw_cap, call_timeout, allow_side_effects, session_id
+            )
         servers = [
             {"py_name": py_name, "tools": [n.replace("-", "_") for n in proxy._tools]}
             for py_name, proxy in proxies.items()
