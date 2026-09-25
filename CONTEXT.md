@@ -1,9 +1,9 @@
 # Task: updated_code_runner
 
 **Status:** in_progress
-**Done means:** SHA-149 ч.2: SkillProxy логирует исход вызова скилла в status.json и зовёт demote() (rate<0.8 на ≥5); demote живёт только в code-runner; тесты и ruff зелёные; коммиты в оба репо, демон перезапущен
+**Done means:** Полоса 2: #125 camelCase/диспетчеры в approval-gate, #122 секреты в dir()/vars(), #124 журнал вызовов — по каждому red-тест до фикса, зелёный после, полный прогон зелёный, отдельный коммит
 **Linear:** —
-**Updated:** 2026-09-14T22:04:40.887130+00:00
+**Updated:** 2026-09-25T09:09:40.906477+00:00
 
 ## Steps
 (no steps)
