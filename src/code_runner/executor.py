@@ -60,6 +60,8 @@ SAFE_BUILTINS = {
     "IndexError", "RuntimeError", "Exception",
     "NameError", "AttributeError", "StopIteration",
     "ZeroDivisionError", "AssertionError", "NotImplementedError",
+    # Raised by the tool proxy itself: side-effect gate / per-call deadline.
+    "PermissionError", "TimeoutError",
     # DELIBERATELY EXCLUDED (sandbox escape via runtime-string dunder access,
     # which bypasses the AST dunder guard): getattr, hasattr, setattr, delattr,
     # vars, globals, locals, dir, eval, exec, compile, open, __import__, input.

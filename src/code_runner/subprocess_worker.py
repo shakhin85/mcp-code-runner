@@ -91,13 +91,20 @@ class _RemoteToolError(RuntimeError):
     """Re-raised in the child for an MCP tool error that occurred in the parent.
 
     The parent runs the real proxy (which raises MCPToolError, ValueError, …);
-    only the type name and message cross the pipe. We surface a RuntimeError so
+    only the type name and message cross the pipe. Builtin exception types are
+    re-raised as themselves (_make_remote_exc); for the rest we surface a RuntimeError so
     ``except RuntimeError`` / ``except Exception`` in user code still catches it,
     and set ``__name__`` so ``type(e).__name__`` reads the original class.
     """
 
 
 def _make_remote_exc(type_name: str, msg: str) -> BaseException:
+    # A builtin exception (PermissionError from the side-effect gate,
+    # TimeoutError from the per-call deadline, ValueError, …) is re-raised as
+    # itself: `except PermissionError` must behave as it does in-process.
+    builtin = getattr(_builtins, type_name, None)
+    if isinstance(builtin, type) and issubclass(builtin, Exception):
+        return builtin(msg)
     exc = _RemoteToolError(msg)
     # So `type(e).__name__` in user code reports the parent-side class name.
     exc.__class__ = type(type_name, (_RemoteToolError,), {})
