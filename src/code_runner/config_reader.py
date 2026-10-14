@@ -121,7 +121,8 @@ def _parse_servers(
                 name=name,
                 transport="http",
                 url=cfg.get("url", ""),
-                env=_expand_env(cfg.get("env", {})),
+                # Claude Code хранит заголовки http-сервера в "headers"; "env" — старый путь этого конфига.
+                env=_expand_env({**cfg.get("env", {}), **cfg.get("headers", {})}),
             )
         else:
             servers[name] = ServerConfig(
