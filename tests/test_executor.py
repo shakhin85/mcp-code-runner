@@ -429,6 +429,22 @@ class TestSubprocessIsolation:
         assert r2["success"] is True, r2["error"]
         assert "43" in r2["output"]
 
+    def test_unpicklable_var_name_error_explains_boundary(self):
+        ex = self._executor()
+        r1 = asyncio.run(ex.execute("def f():\n    return 1\nn = 2", session_id="s2"))
+        assert r1["success"] is True, r1["error"]
+        r2 = asyncio.run(ex.execute("print(f() + n)", session_id="s2"))
+        assert r2["success"] is False
+        assert "NameError" in r2["error"]
+        assert "HINT: f присвоен в прошлом блоке, но не сохранён" in r2["error"]
+
+    def test_unknown_name_gets_no_boundary_hint(self):
+        ex = self._executor()
+        asyncio.run(ex.execute("def f():\n    return 1", session_id="s3"))
+        r = asyncio.run(ex.execute("print(g())", session_id="s3"))
+        assert r["success"] is False
+        assert "не сохранён" not in r["error"]
+
     def test_workspace_write_confined(self):
         ex = self._executor()
         code = (

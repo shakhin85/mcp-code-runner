@@ -325,7 +325,7 @@ def _dialect_for_server(server_name: str) -> str | None:
 
 
 class _SessionState:
-    __slots__ = ("user_vars", "last_access", "blocks", "failed_block")
+    __slots__ = ("user_vars", "last_access", "blocks", "failed_block", "dropped")
 
     def __init__(self) -> None:
         self.user_vars: dict[str, Any] = {}
@@ -334,6 +334,8 @@ class _SessionState:
         # (номер, строка, имена). Упавший блок не сохраняет переменные — см. _failed_block_hint.
         self.blocks: int = 0
         self.failed_block: tuple[int, int | None, frozenset[str]] | None = None
+        # Имена, которые subprocess-child не смог сохранить (не пиклятся) — см. _dropped_var_hint.
+        self.dropped: frozenset[str] = frozenset()
 
 
 def _truncate_output(output: str, max_bytes: int) -> str:
@@ -774,6 +776,25 @@ def _failed_block_hint(
         f"\n\nHINT: блок {block_no} упал{where}, переменная {m.group(1)} не присвоена — "
         f"упавший блок не сохраняет в сессии ни одной своей переменной; "
         f"перезапусти его присваивания."
+    )
+
+
+def _dropped_var_hint(error: str, dropped: frozenset[str]) -> str:
+    """Explain a NameError on a name an earlier block bound but could not persist.
+
+    Under subprocess isolation the session crosses a pipe as a pickle, so a
+    function, lambda or live proxy from an earlier block is gone in the next one.
+    The roster hint would call that a typo; the real cause is the boundary.
+    """
+    m = _NAME_ERROR_HEADER_RE.search(error)
+    if not m or m.group(1) not in dropped:
+        return ""
+    name = m.group(1)
+    return (
+        f"\n\nHINT: {name} присвоен в прошлом блоке, но не сохранён в сессии — "
+        f"между блоками сессия переживает только пиклящиеся значения "
+        f"(def-функции, lambda, генераторы, прокси серверов — нет); "
+        f"определи {name} в том же блоке, где вызываешь."
     )
 
 
@@ -1364,15 +1385,13 @@ class CodeExecutor:
             await loop.run_in_executor(None, proc.join)
             parent_conn.close()
 
-        if (
-            session_id is not None
-            and result.get("success")
-            and result.get("user_vars") is not None
-        ):
+        if session_id is not None and result.get("success"):
             st = self._sessions.get(session_id)
             if st is not None:
-                st.user_vars = result["user_vars"]
-                st.last_access = time.monotonic()
+                st.dropped |= frozenset(result.get("dropped_vars") or ())
+                if result.get("user_vars") is not None:
+                    st.user_vars = result["user_vars"]
+                    st.last_access = time.monotonic()
 
         error = result.get("error")
         if error:
@@ -1434,6 +1453,7 @@ class CodeExecutor:
             if state is not None and not success and error:
                 line = _error_line(error)
                 error += _failed_block_hint(error, state.failed_block)
+                error += _dropped_var_hint(error, state.dropped)
                 # Блок без присваиваний ничего не потерял и будущий NameError не
                 # объясняет — он не затирает прошлый упавший блок.
                 names = _assigned_names(source)

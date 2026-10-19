@@ -225,15 +225,19 @@ def _build_child_namespace(payload: dict, rpc: _RpcBridge) -> tuple[dict, set[st
     return namespace, framework_names, output_lines
 
 
-def _extract_picklable_vars(namespace: dict, framework_names: set[str]) -> bytes | None:
+def _extract_picklable_vars(
+    namespace: dict, framework_names: set[str],
+) -> tuple[bytes | None, list[str]]:
     """Pickle only the user vars that survive serialization; drop the rest.
 
     A fresh process per call means persistence must cross a pipe, so unlike the
     in-process path this can only carry picklable values. Live proxies, modules,
-    and lambdas are silently not persisted — which is also more honest than
-    carrying a stale proxy across calls.
+    functions and lambdas are not persisted — which is also more honest than
+    carrying a stale proxy across calls. The dropped names go back to the parent,
+    so a later NameError on one of them can say why instead of suggesting a typo.
     """
     keep: dict[str, Any] = {}
+    dropped: list[str] = []
     for k, v in namespace.items():
         if k in framework_names or k == "print":
             continue
@@ -242,14 +246,15 @@ def _extract_picklable_vars(namespace: dict, framework_names: set[str]) -> bytes
         try:
             pickle.dumps(v)
         except Exception:
+            dropped.append(k)
             continue
         keep[k] = v
     if not keep:
-        return None
+        return None, dropped
     try:
-        return pickle.dumps(keep)
+        return pickle.dumps(keep), dropped
     except Exception:
-        return None
+        return None, dropped + list(keep)
 
 
 async def _run(payload: dict, rpc: _RpcBridge) -> dict:
@@ -276,11 +281,13 @@ async def _run(payload: dict, rpc: _RpcBridge) -> dict:
                 output += _json.dumps(result, ensure_ascii=False, indent=2)
             else:
                 output += str(result)
+        user_vars, dropped = _extract_picklable_vars(namespace, framework_names)
         return {
             "success": True,
             "output": output,
             "error": None,
-            "user_vars": _extract_picklable_vars(namespace, framework_names),
+            "user_vars": user_vars,
+            "dropped_vars": dropped,
         }
     except BaseException as e:
         # Same HINT set as the in-process path — they need the live exception,
