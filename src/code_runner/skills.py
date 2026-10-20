@@ -273,15 +273,12 @@ class SkillsNamespace:
                 if callable(v) and not k.startswith("_")
             }
             self._proxies[name] = SkillProxy(name, callables, spec.path)
-            own = next(
-                (k for k, v in callables.items()
-                 if inspect.isfunction(v) and v.__globals__ is module_ns),
-                None,
-            )
-            if own:
-                target = f"skills.{name}.{own}"
-                for raw in spec.replaces:
-                    self.replacements.setdefault(raw, target)
+            # `server.tool:fn` names the replacing function; bare `server.tool`
+            # points at the skill as a whole rather than guessing a function.
+            for raw in spec.replaces:
+                tool, _, fn = raw.partition(":")
+                target = f"skills.{name}.{fn}" if fn else f"skills.{name}"
+                self.replacements.setdefault(tool, target)
 
     def find_callables(self, fn_name: str) -> list[tuple[str, Any]]:
         """All loaded skill callables named `fn_name`, as (skill_name, fn).

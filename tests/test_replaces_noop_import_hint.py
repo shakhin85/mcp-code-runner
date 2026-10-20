@@ -76,7 +76,7 @@ def _run(isolation, code, skills=None, **kw):
 
 @pytest.mark.parametrize("isolation", ISOLATIONS)
 def test_replaces_frontmatter_adds_skill_hint_to_gate_error(isolation, tmp_path):
-    _skill(tmp_path, "thing_skill", replaces="srv.create_thing")
+    _skill(tmp_path, "thing_skill", replaces="srv.create_thing:thing")
     _skill(tmp_path, "other_skill")
     skills = SkillsNamespace(SkillLoader(tmp_path).discover())
     result, session = _run(isolation, "await srv.create_thing(a=1)", skills)
@@ -146,3 +146,12 @@ def test_introspection_names_still_undefined_but_hinted(isolation, name):
     assert f"NameError: name '{name}' is not defined" in err, err
     assert "HINT" in err and "list_available_tools" in err, err
     assert "sandbox_introspect" in err, err
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_replaces_without_fn_names_skill_not_a_guessed_function(isolation, tmp_path):
+    _skill(tmp_path, "thing_skill", replaces="srv.create_thing")
+    skills = SkillsNamespace(SkillLoader(tmp_path).discover())
+    result, _ = _run(isolation, "await srv.create_thing(a=1)", skills)
+    assert "skills.thing_skill" in result["error"], result["error"]
+    assert "skills.thing_skill.thing" not in result["error"], result["error"]
