@@ -507,6 +507,75 @@ def _parse_python_repr(text: str) -> Any:
     )
 
 
+_PRELOADED_MODULES = frozenset({"asyncio", *SAFE_MODULES})
+
+
+def _is_noop_import(node: ast.AST) -> bool:
+    """`import X` / `import X as Y` / `from X import a, b` of a module that is
+    already in the namespace. Such an import binds names that exist anyway, so
+    it is rewritten to an assignment (_rewrite_noop_imports) instead of refused.
+    Dotted names, relative imports, `*` and `_`-names stay blocked."""
+    if isinstance(node, ast.Import):
+        return all(a.name in _PRELOADED_MODULES for a in node.names)
+    if isinstance(node, ast.ImportFrom):
+        return (
+            node.level == 0
+            and node.module in _PRELOADED_MODULES
+            and all(a.name != "*" and not a.name.startswith("_") for a in node.names)
+        )
+    return False
+
+
+class _NoopImportRewriter(ast.NodeTransformer):
+    def _assigns(self, pairs: list[tuple[str, ast.expr]], node: ast.stmt) -> list[ast.stmt]:
+        out = [
+            ast.Assign(targets=[ast.Name(id=name, ctx=ast.Store())], value=value)
+            for name, value in pairs
+        ]
+        for a in out:
+            ast.copy_location(a, node)
+        return out
+
+    def visit_Import(self, node: ast.Import):
+        if not _is_noop_import(node):
+            return node
+        return self._assigns(
+            [(a.asname or a.name, ast.Name(id=a.name, ctx=ast.Load())) for a in node.names],
+            node,
+        )
+
+    def visit_ImportFrom(self, node: ast.ImportFrom):
+        if not _is_noop_import(node):
+            return node
+        return self._assigns(
+            [
+                (
+                    a.asname or a.name,
+                    ast.Attribute(
+                        value=ast.Name(id=node.module, ctx=ast.Load()),
+                        attr=a.name,
+                        ctx=ast.Load(),
+                    ),
+                )
+                for a in node.names
+            ],
+            node,
+        )
+
+
+def _rewrite_noop_imports(code: str) -> str:
+    """Rewrite already-preloaded imports to plain assignments (`Y = X`, `a = X.a`)."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+    if not any(_is_noop_import(n) for n in ast.walk(tree)):
+        return code
+    tree = _NoopImportRewriter().visit(tree)
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
 def validate_code(code: str) -> None:
     """Validate user code AST. Raises ValueError if dangerous constructs found."""
     try:
@@ -516,12 +585,14 @@ def validate_code(code: str) -> None:
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
+            if _is_noop_import(node):
+                continue
             names = []
             if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
             else:
                 names = [node.module or ""]
-            preloaded = {"asyncio", *SAFE_MODULES}
+            preloaded = _PRELOADED_MODULES
             already = [n for n in names if n.split(".")[0] in preloaded]
             hint = ""
             if already:
@@ -678,6 +749,7 @@ def _signature_hint(exc: BaseException, skills: "SkillsNamespace | None") -> str
     return "\n\nHINT: сигнатуры skills-функций с этим именем —\n  " + "\n  ".join(lines)
 
 
+_INTROSPECTION_NAMES = frozenset({"dir", "globals", "locals", "vars"})
 _NAME_ERROR_RE = re.compile(r"name '([^']+)' is not defined")
 
 
@@ -696,6 +768,12 @@ def _name_error_hint(exc: BaseException, namespace: dict[str, Any]) -> str:
     if not m:
         return ""
     missing = m.group(1)
+    if missing in _INTROSPECTION_NAMES:
+        return (
+            f"\n\nHINT: {missing}() в песочнице недоступен. Список MCP-серверов и "
+            "инструментов — MCP-тул list_available_tools / search_tools (вне "
+            "execute_code); skills — skills.sandbox_introspect.list_all()."
+        )
     visible = sorted(
         name for name in namespace
         if not name.startswith("_") and name != "__builtins__"
@@ -893,6 +971,7 @@ class _ToolNamespace:
         call_timeout: float = 0,
         allowed_side_effects: list[str] | None = None,
         journal: Path | None = None,
+        replacements: dict[str, str] | None = None,
     ):
         self._server_name = server_name
         self._session = session
@@ -905,6 +984,7 @@ class _ToolNamespace:
         self._call_timeout = call_timeout
         self._allowed_side_effects = set(allowed_side_effects or [])
         self._journal = journal
+        self._replacements = replacements or {}
         # Вызовы идут через пул, а не через захваченную при сборке сессию:
         # мёртвая/перезапущенная MCP-сессия так переподключается прозрачно
         # (MCPClientPool.call_tool = reconnect + один retry).
@@ -942,6 +1022,7 @@ class _ToolNamespace:
         caller = self._caller
         call_timeout = self._call_timeout
         allowed = self._allowed_side_effects
+        replacements = self._replacements
 
         async def wrapper(**kwargs):
             # SHA-123: deny-by-default gate on side-effecting tools — checked
@@ -954,8 +1035,10 @@ class _ToolNamespace:
                 and f"{server}.{gated}" not in allowed
                 and f"{server}.*" not in allowed
             ):
+                skill = replacements.get(f"{server}.{gated}")
+                hint = f"используй {skill}(...) вместо сырого вызова\n" if skill else ""
                 raise PermissionError(
-                    f"{server}.{gated} is side-effecting; pass "
+                    f"{hint}{server}.{gated} is side-effecting; pass "
                     f'allow_side_effects=["{server}.{gated}"] to execute_code'
                 )
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
@@ -1158,6 +1241,7 @@ class CodeExecutor:
         if session_id is not None:
             with contextlib.suppress(WorkspaceError):
                 journal = self.workspace.resolve_path(session_id, JOURNAL_NAME)
+        replacements = getattr(self.skills, "replacements", None)
         proxies: dict[str, _ToolNamespace] = {}
         for server_name, session in self.pool.sessions.items():
             py_name = server_name_to_py(server_name)
@@ -1172,6 +1256,7 @@ class CodeExecutor:
                 call_timeout=call_timeout,
                 allowed_side_effects=allow_side_effects,
                 journal=journal,
+                replacements=replacements,
             )
         # Project-level servers (daemon mode): only names the global pool
         # doesn't already serve — global wins on collision.
@@ -1191,6 +1276,7 @@ class CodeExecutor:
                     call_timeout=call_timeout,
                     allowed_side_effects=allow_side_effects,
                     journal=journal,
+                    replacements=replacements,
                 )
         return proxies
 
@@ -1494,7 +1580,7 @@ class CodeExecutor:
         except ValueError as e:
             return finalize(False, "", str(e))
 
-        code = _transform_last_expr(code)
+        code = _transform_last_expr(_rewrite_noop_imports(code))
 
         # Subprocess isolation path: run in a fresh rlimited child. finalize()
         # (truncation, error cap, cost footer, metrics) and stats — populated by

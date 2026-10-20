@@ -28,6 +28,7 @@ class SkillSpec:
     source: str
     description: str
     path: Path
+    replaces: tuple[str, ...] = ()
 
 
 _SKILL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
@@ -68,6 +69,23 @@ def write_skill_files(
 _FRONTMATTER_DESC_RE = re.compile(r"^description:\s*(.+?)\s*$", re.MULTILINE)
 
 
+_FRONTMATTER_REPLACES_RE = re.compile(r"^replaces:\s*\[(.*?)\]\s*$", re.MULTILINE)
+
+
+def _parse_replaces(md_text: str) -> tuple[str, ...]:
+    """`replaces: [server.tool, ...]` from frontmatter: raw tools this skill supersedes."""
+    text = md_text.strip()
+    if not text.startswith("---"):
+        return ()
+    end = text.find("---", 3)
+    if end == -1:
+        return ()
+    m = _FRONTMATTER_REPLACES_RE.search(text[3:end])
+    if not m:
+        return ()
+    return tuple(t for t in (x.strip().strip("'\"") for x in m.group(1).split(",")) if t)
+
+
 def _parse_description(md_text: str) -> str:
     text = md_text.strip()
     if text.startswith("---"):
@@ -101,14 +119,14 @@ class SkillLoader:
             if not script.is_file() or not skill_md.is_file():
                 continue
             source = script.read_text(encoding="utf-8")
-            description = _parse_description(
-                skill_md.read_text(encoding="utf-8")
-            )
+            md_text = skill_md.read_text(encoding="utf-8")
+            description = _parse_description(md_text)
             out[child.name] = SkillSpec(
                 name=child.name,
                 source=source,
                 description=description,
                 path=child,
+                replaces=_parse_replaces(md_text),
             )
         return out
 
@@ -224,10 +242,13 @@ class SkillsNamespace:
     the per-session workspace-bound safe_open before each user run.
     """
 
-    __slots__ = ("_proxies", "_shared_builtins", "root")
+    __slots__ = ("_proxies", "_shared_builtins", "root", "replacements")
 
     def __init__(self, specs: dict[str, SkillSpec]) -> None:
         self._proxies: dict[str, Any] = {}
+        # "server.tool" -> "skills.<name>.<fn>": what the side-effect gate
+        # recommends instead of a raw tool a skill declared via `replaces:`.
+        self.replacements: dict[str, str] = {}
         # Where these skills were loaded from. Skill callables can't be pickled
         # across to an isolation child, so the child reloads from this path —
         # carrying it on the namespace means a caller can't wire up skills and
@@ -252,6 +273,15 @@ class SkillsNamespace:
                 if callable(v) and not k.startswith("_")
             }
             self._proxies[name] = SkillProxy(name, callables, spec.path)
+            own = next(
+                (k for k, v in callables.items()
+                 if inspect.isfunction(v) and v.__globals__ is module_ns),
+                None,
+            )
+            if own:
+                target = f"skills.{name}.{own}"
+                for raw in spec.replaces:
+                    self.replacements.setdefault(raw, target)
 
     def find_callables(self, fn_name: str) -> list[tuple[str, Any]]:
         """All loaded skill callables named `fn_name`, as (skill_name, fn).
