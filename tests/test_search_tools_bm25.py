@@ -1,5 +1,8 @@
 """search_tools ранжирует по BM25: любое слово запроса может совпасть, лучшие — первыми."""
 
+import json
+from pathlib import Path
+
 from mcp.types import Tool
 
 from code_runner.server import SEARCH_LIMIT, _search_tools_logic
@@ -62,3 +65,12 @@ def test_limit_and_footer():
     out = _search_tools_logic("fetch", many, {"srv": "srv"}, detail="name")
     assert out.count("srv.tool_") == SEARCH_LIMIT
     assert f"{SEARCH_LIMIT} of {SEARCH_LIMIT + 5}" in out
+
+
+def test_long_parameter_prose_does_not_bury_name_hit():
+    # живые схемы Linear (tests/linear_tools.json): у createIssue параметров больше,
+    # чем у createIssueTemplate, и при одном общем документе он уходил на 4-е место
+    raw = json.loads((Path(__file__).parent / "linear_tools.json").read_text(encoding="utf-8"))
+    tools = {"linear": [_tool(t["name"], t["description"], t["properties"]) for t in raw]}
+    out = _search_tools_logic("create issue ticket", tools, {"linear": "linear"}, detail="name")
+    assert out.splitlines()[1] == "linear.linear_createIssue"

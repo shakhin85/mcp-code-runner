@@ -182,6 +182,7 @@ def _overview_logic(
 SEARCH_DETAILS = ("name", "desc", "full")
 SEARCH_LIMIT = 10
 _BM25_K1, _BM25_B = 1.2, 0.75
+_NAME_WEIGHT = 2.0
 
 
 def _tokens(text: str) -> list[str]:
@@ -190,16 +191,15 @@ def _tokens(text: str) -> list[str]:
     return re.findall(r"[^\W_]+", text.lower())
 
 
-def _tool_doc(tool: Tool) -> list[str]:
-    """Searchable tokens of a tool. The name counts twice: a name hit outranks prose."""
+def _tool_text(tool: Tool) -> list[str]:
+    """Tokens of the description and parameters — the prose field of a tool."""
     props = (tool.inputSchema or {}).get("properties") or {}
     params = " ".join(
         f"{key} {spec.get('description', '')}"
         for key, spec in props.items()
         if isinstance(spec, dict)
     )
-    name = _tokens(tool.name)
-    return name + name + _tokens(f"{tool.description or ''} {params}")
+    return _tokens(f"{tool.description or ''} {params}")
 
 
 def _term_hits(term: str, doc: list[str]) -> int:
@@ -255,7 +255,13 @@ def _search_tools_logic(
         return _overview_logic(tools_by_server, py_name_map)
 
     entries = [(server, tool) for server, tools in tools_by_server.items() for tool in tools]
-    scores = _bm25_scores(_tokens(query), [_tool_doc(tool) for _, tool in entries])
+    # Fields scored apart: long parameter prose must not dilute a hit in the name.
+    terms = _tokens(query)
+    name_scores = _bm25_scores(terms, [_tokens(tool.name) for _, tool in entries])
+    text_scores = _bm25_scores(terms, [_tool_text(tool) for _, tool in entries])
+    scores = [
+        _NAME_WEIGHT * n + t for n, t in zip(name_scores, text_scores, strict=True)
+    ]
     ranked = sorted(
         ((s, e) for s, e in zip(scores, entries, strict=True) if s > 0),
         key=lambda pair: pair[0],
