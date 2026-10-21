@@ -7,6 +7,7 @@ Exposes three tools to Claude:
   - execute_code          -> run Python code with MCP tool access
 """
 
+import ast
 import asyncio
 import json
 import logging
@@ -154,8 +155,23 @@ async def _resolve_project_dir(ctx: Context) -> "Path | None":
     return project_dir
 
 
-async def _project_pool(ctx: Context) -> "MCPClientPool | None":
-    """Per-project pool for this client session (daemon mode), else None."""
+def _names_any_server(code: str, server_names: frozenset[str]) -> bool:
+    """True if code mentions a py-name of these servers; unparsable code counts as yes."""
+    py_names = {server_name_to_py(name) for name in server_names}
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return True
+    return any(isinstance(n, ast.Name) and n.id in py_names for n in ast.walk(tree))
+
+
+async def _project_pool(ctx: Context, code: str | None = None) -> "MCPClientPool | None":
+    """Per-project pool for this client session (daemon mode), else None.
+
+    With `code`, waits for the pool's startup only if the code names one of the
+    project servers (SHA-456): a run on global servers alone must not stall
+    behind a slow project server.
+    """
     registry: ProjectPoolRegistry | None = ctx.request_context.lifespan_context.get(
         "project_pools"
     )
@@ -165,7 +181,13 @@ async def _project_pool(ctx: Context) -> "MCPClientPool | None":
     if project_dir is None:
         return None
     try:
-        return await registry.get(project_dir)
+        host = await registry.host_for(project_dir)
+        if host is None:
+            return None
+        if code is not None and not _names_any_server(code, host.server_names):
+            return None
+        await asyncio.wait_for(host.ready.wait(), timeout=STARTUP_TIMEOUT)
+        return host.pool
     except Exception as e:
         logger.warning(f"Project pool unavailable for {project_dir}: {e}")
         return None
@@ -440,7 +462,7 @@ async def execute_code(
         session_id=session_id,
         auto_limit=auto_limit,
         raw_cap=raw_cap,
-        extra_pool=await _project_pool(ctx),
+        extra_pool=await _project_pool(ctx, code),
         per_call_timeout=per_call_timeout,
         allow_side_effects=allow_side_effects,
     )
