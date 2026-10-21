@@ -53,6 +53,12 @@ A single call whose output passes through unaggregated also prints
 The receipt makes both the saving and its absence visible, so routing through the
 sandbox stops being a matter of faith.
 
+A third line, `[cr] ⚠ check before trusting the result: …`, names quiet failures —
+results that parse fine but may be wrong: 0 rows, a saturated auto-LIMIT, a RAW-CAP
+string, rows where every value is None. With `session_id` set, output over
+`max_output_bytes` is also written in full to `out_<block>.txt` in the workspace, and
+the truncation footer names that file instead of advising a re-run.
+
 ## Dev
 
 - `uv run pytest` — full test suite

@@ -338,7 +338,7 @@ class _SessionState:
         self.dropped: frozenset[str] = frozenset()
 
 
-def _truncate_output(output: str, max_bytes: int) -> str:
+def _truncate_output(output: str, max_bytes: int, saved_as: str | None = None) -> str:
     """Truncate output to max_bytes (UTF-8 safe) with an informative footer.
 
     Protects the model's context from runaway MCP responses (SELECT * without
@@ -348,6 +348,9 @@ def _truncate_output(output: str, max_bytes: int) -> str:
     ``<system_hint>truncated: shown {shown_bytes} of {total_bytes} bytes</system_hint>``
     marker, so a consuming model can detect partial output instead of
     silently treating the truncated slice as the whole result.
+
+    ``saved_as`` names the workspace file holding the full output: the cut is
+    then reversible — the next block reads the tail instead of re-running.
     """
     if max_bytes <= 0 or not output:
         return output
@@ -357,9 +360,14 @@ def _truncate_output(output: str, max_bytes: int) -> str:
         return output
     kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
     shown_bytes = len(kept.encode("utf-8"))
+    remedy = (
+        f"Full output saved: open('{saved_as}') in the same session_id."
+        if saved_as
+        else "Use SQL LIMIT/TOP, pagination, or narrow your query."
+    )
     footer = (
         f"\n\n... [TRUNCATED: output was {total_bytes} bytes, kept first "
-        f"{max_bytes}. Use SQL LIMIT/TOP, pagination, or narrow your query.]"
+        f"{max_bytes}. {remedy}]"
         f"\n<system_hint>truncated: shown {shown_bytes} of {total_bytes} bytes</system_hint>"
     )
     return kept + footer
@@ -419,7 +427,48 @@ def _append_cost_footer(output: str, stats: dict[str, int], elapsed_ms: float) -
             "\n[cr] no aggregation happened here — one tool call, output passed through. "
             "A direct MCP call would have cost the same and been simpler."
         )
+    warnings = _quiet_failure_warnings(stats)
+    if warnings:
+        line += "\n[cr] ⚠ check before trusting the result: " + " · ".join(warnings)
     return f"{output}\n{line}" if output else line
+
+
+def _quiet_failure_warnings(stats: dict[str, int]) -> list[str]:
+    """Name the results that look valid but may not be.
+
+    An exception is noticed; a plausible-but-wrong result mostly is not
+    (arXiv 2610.10062: 91% vs 59%). Empty rows, a saturated auto-LIMIT, a
+    RAW-CAP string and all-None rows all pass silently through user code
+    that aggregates them — so the receipt names them.
+    """
+    labels = (
+        ("empty_results", "returned 0 rows"),
+        ("limit_saturated", "hit the auto-LIMIT — rows are partial"),
+        ("raw_capped", "hit RAW-CAP — a truncated string, not parsed rows"),
+        ("all_none_results", "returned rows where every value is None"),
+    )
+    out = []
+    for key, label in labels:
+        n = stats.get(key, 0)
+        if n:
+            out.append(f"{n} call{'s' if n != 1 else ''} {label}")
+    return out
+
+
+_UNPARSED = object()
+
+
+def _result_shape(parsed: Any, limit_applied: bool, auto_limit: int) -> str | None:
+    """Classify a parsed tool result as one of the quiet-failure stats keys."""
+    if not isinstance(parsed, list):
+        return None
+    if not parsed:
+        return "empty_results"
+    if limit_applied and len(parsed) >= auto_limit:
+        return "limit_saturated"
+    if all(isinstance(r, dict) and r and all(v is None for v in r.values()) for r in parsed):
+        return "all_none_results"
+    return None
 
 
 class _SandboxTimeout(BaseException):
@@ -1085,6 +1134,7 @@ class _ToolNamespace:
                 if raw_cap > 0 and out_bytes > raw_cap:
                     if self._stats is not None:
                         self._stats["str_results"] += 1
+                        self._stats["raw_capped"] = self._stats.get("raw_capped", 0) + 1
                     kept = combined.encode("utf-8")[:raw_cap].decode("utf-8", errors="ignore")
                     return (
                         kept
@@ -1098,13 +1148,17 @@ class _ToolNamespace:
                 # str(list_of_dicts) with Decimal(...) and single-quoted strings.
                 if stripped.startswith(("{", "[")):
                     try:
-                        return json.loads(combined)
+                        parsed = json.loads(combined)
                     except json.JSONDecodeError:
-                        pass
-                    try:
-                        return _parse_python_repr(stripped)
-                    except ValueError:
-                        pass
+                        try:
+                            parsed = _parse_python_repr(stripped)
+                        except ValueError:
+                            parsed = _UNPARSED
+                    if parsed is not _UNPARSED:
+                        shape = _result_shape(parsed, limit_applied, self._auto_limit)
+                        if shape and self._stats is not None:
+                            self._stats[shape] = self._stats.get(shape, 0) + 1
+                        return parsed
                 if self._stats is not None:
                     self._stats["str_results"] += 1
                 return combined
@@ -1546,7 +1600,21 @@ class CodeExecutor:
                 if names:
                     state.failed_block = (block_no, line, names)
             error = _truncate_error(error, MAX_ERROR_BYTES)
-            truncated = _truncate_output(output, max_output_bytes)
+            saved_as = None
+            if (
+                state is not None
+                and max_output_bytes > 0
+                and output
+                and len(output.encode("utf-8")) > max_output_bytes
+            ):
+                saved_as = f"out_{block_no}.txt"
+                try:
+                    self.workspace.resolve_path(session_id, saved_as).write_text(
+                        output, encoding="utf-8"
+                    )
+                except OSError:
+                    saved_as = None
+            truncated = _truncate_output(output, max_output_bytes, saved_as)
             truncated = _append_cost_footer(
                 truncated, stats, elapsed_ms=(time.monotonic() - start_exec) * 1000
             )
