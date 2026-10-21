@@ -36,6 +36,7 @@ class _PoolHost:
     def __init__(self, project_dir: Path | str, configs: dict):
         self.pool = MCPClientPool()
         self.project_dir = project_dir
+        self.server_names = frozenset(configs)
         self._stop = asyncio.Event()
         self.ready = asyncio.Event()
         self._task = asyncio.create_task(
@@ -73,8 +74,10 @@ class ProjectPoolRegistry:
         self._last_access: dict[Path, float] = {}
         self._lock = asyncio.Lock()
 
-    async def get(self, project_dir: Path) -> MCPClientPool | None:
-        """Pool for this project, or None if it adds no servers beyond global."""
+    async def host_for(self, project_dir: Path) -> _PoolHost | None:
+        """Host of this project's pool, started but not awaited; None if the
+        project adds no servers beyond global. Callers await host.ready only
+        when they need the project servers — startup can take STARTUP_TIMEOUT."""
         project_dir = project_dir.resolve()
         async with self._lock:
             await self._evict_idle_locked()
@@ -93,8 +96,7 @@ class ProjectPoolRegistry:
                 host = _PoolHost(project_dir, configs)
                 self._hosts[project_dir] = host
             self._last_access[project_dir] = time.monotonic()
-        await asyncio.wait_for(host.ready.wait(), timeout=STARTUP_TIMEOUT)
-        return host.pool
+        return host
 
     async def _evict_idle_locked(self) -> None:
         now = time.monotonic()
