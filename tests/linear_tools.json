@@ -1,0 +1,3382 @@
+[
+{
+"name": "linear_getViewer",
+"description": "Get information about the currently authenticated user",
+"properties": {}
+},
+{
+"name": "linear_getOrganization",
+"description": "Get information about the current Linear organization",
+"properties": {}
+},
+{
+"name": "linear_getUsers",
+"description": "Get a list of users in the Linear organization",
+"properties": {}
+},
+{
+"name": "linear_getLabels",
+"description": "Get a list of issue labels from Linear",
+"properties": {}
+},
+{
+"name": "linear_getTeams",
+"description": "Get a list of teams from Linear",
+"properties": {}
+},
+{
+"name": "linear_getWorkflowStates",
+"description": "Get workflow states for a team",
+"properties": {
+"teamId": {
+"description": "ID of the team to get workflow states for"
+},
+"includeArchived": {
+"description": "Whether to include archived states (default: false)"
+}
+}
+},
+{
+"name": "linear_createWorkflowState",
+"description": "Create a new workflow state",
+"properties": {
+"name": {
+"description": "Workflow state name"
+},
+"teamId": {
+"description": "Team that owns the workflow state"
+},
+"type": {
+"description": "Workflow state type"
+},
+"color": {
+"description": "Workflow state color"
+},
+"description": {
+"description": "Optional workflow state description"
+},
+"position": {
+"description": "Optional position in the workflow"
+}
+}
+},
+{
+"name": "linear_updateWorkflowState",
+"description": "Update a workflow state. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "ID of the workflow state to update"
+},
+"name": {
+"description": ""
+},
+"color": {
+"description": ""
+},
+"description": {
+"description": ""
+},
+"position": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_updateTeam",
+"description": "Update team settings",
+"properties": {
+"id": {
+"description": "ID of the team to update"
+},
+"name": {
+"description": ""
+},
+"key": {
+"description": ""
+},
+"description": {
+"description": ""
+},
+"color": {
+"description": ""
+},
+"icon": {
+"description": ""
+},
+"timezone": {
+"description": ""
+},
+"parentId": {
+"description": ""
+},
+"private": {
+"description": ""
+},
+"visibility": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getTeamMemberships",
+"description": "Get team memberships",
+"properties": {
+"teamId": {
+"description": "ID of the team to inspect"
+},
+"limit": {
+"description": "Maximum number of memberships to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived memberships"
+},
+"orderBy": {
+"description": "Sort memberships by created or updated date"
+}
+}
+},
+{
+"name": "linear_createTeam",
+"description": "Create a new team",
+"properties": {
+"name": {
+"description": "Team name"
+},
+"key": {
+"description": ""
+},
+"description": {
+"description": ""
+},
+"color": {
+"description": ""
+},
+"icon": {
+"description": ""
+},
+"timezone": {
+"description": ""
+},
+"parentId": {
+"description": ""
+},
+"private": {
+"description": ""
+},
+"visibility": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_archiveTeam",
+"description": "Archive a team",
+"properties": {
+"id": {
+"description": "ID of the team to archive"
+}
+}
+},
+{
+"name": "linear_addUserToTeam",
+"description": "Add a user to a team",
+"properties": {
+"teamId": {
+"description": "ID of the team to update"
+},
+"userId": {
+"description": "ID of the user to add"
+},
+"owner": {
+"description": "Whether the user should be a team owner"
+},
+"sortOrder": {
+"description": "Optional membership sort order"
+}
+}
+},
+{
+"name": "linear_removeUserFromTeam",
+"description": "Remove a user from a team",
+"properties": {
+"teamId": {
+"description": "ID of the team to update"
+},
+"userId": {
+"description": "ID of the user to remove"
+},
+"alsoLeaveParentTeams": {
+"description": "Also leave parent teams when removing membership"
+}
+}
+},
+{
+"name": "linear_updateTeamMembership",
+"description": "Update a user's role in a team. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "ID of the team membership to update"
+},
+"owner": {
+"description": ""
+},
+"sortOrder": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getTeamLabels",
+"description": "Get labels for a specific team",
+"properties": {
+"teamId": {
+"description": "ID of the team to inspect"
+},
+"limit": {
+"description": "Maximum number of labels to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived labels"
+},
+"orderBy": {
+"description": "Sort labels by created or updated date"
+}
+}
+},
+{
+"name": "linear_createTeamLabel",
+"description": "Create a new label for a team",
+"properties": {
+"teamId": {
+"description": "ID of the team that owns the label"
+},
+"name": {
+"description": "Label name"
+},
+"color": {
+"description": "Label color"
+},
+"description": {
+"description": "Optional label description"
+},
+"parentId": {
+"description": "Optional parent label ID"
+}
+}
+},
+{
+"name": "linear_getProjects",
+"description": "Get a list of projects from Linear",
+"properties": {}
+},
+{
+"name": "linear_getProjectById",
+"description": "Get details for a specific Linear project by ID",
+"properties": {
+"id": {
+"description": "ID or slug of the project to retrieve"
+}
+}
+},
+{
+"name": "linear_createProject",
+"description": "Create a new project in Linear",
+"properties": {
+"name": {
+"description": "Name of the project"
+},
+"description": {
+"description": "Short summary of the project"
+},
+"content": {
+"description": "Content of the project (Markdown supported)"
+},
+"teamIds": {
+"description": "IDs of the teams this project belongs to"
+},
+"state": {
+"description": "Initial project status by lifecycle type/name (e.g., 'planned', 'started') or project status UUID"
+},
+"startDate": {
+"description": "Project start date"
+},
+"targetDate": {
+"description": "Project target date"
+},
+"leadId": {
+"description": "ID of the project lead"
+},
+"memberIds": {
+"description": "IDs of users assigned as project members"
+},
+"sortOrder": {
+"description": "Project sort order"
+},
+"icon": {
+"description": "Project icon"
+},
+"color": {
+"description": "Project color"
+}
+}
+},
+{
+"name": "linear_updateProject",
+"description": "Update an existing project in Linear",
+"properties": {
+"id": {
+"description": "ID of the project to update"
+},
+"name": {
+"description": "New name of the project"
+},
+"description": {
+"description": "New short summary of the project"
+},
+"content": {
+"description": "New content of the project (Markdown supported)"
+},
+"state": {
+"description": "New project status by lifecycle type/name (e.g., 'planned', 'started') or project status UUID"
+},
+"startDate": {
+"description": "New project start date"
+},
+"targetDate": {
+"description": "New project target date"
+},
+"leadId": {
+"description": "New project lead user ID"
+},
+"memberIds": {
+"description": "Replacement list of project member user IDs"
+},
+"sortOrder": {
+"description": "New project sort order"
+},
+"icon": {
+"description": "New project icon"
+},
+"color": {
+"description": "New project color"
+}
+}
+},
+{
+"name": "linear_createProjectUpdate",
+"description": "Create a new project update for a Linear project",
+"properties": {
+"projectId": {
+"description": "ID of the project to create the update for"
+},
+"body": {
+"description": "Body content of the project update"
+},
+"health": {
+"description": "Optional health status for the update"
+},
+"isDiffHidden": {
+"description": "Whether Linear should hide the diff against the previous project update"
+}
+}
+},
+{
+"name": "linear_updateProjectUpdate",
+"description": "Update an existing project update in Linear",
+"properties": {
+"id": {
+"description": "ID of the project update to update"
+},
+"body": {
+"description": "Updated body content of the project update"
+},
+"health": {
+"description": "Updated health status for the project update"
+},
+"isDiffHidden": {
+"description": "Whether Linear should hide the diff against the previous project update"
+}
+}
+},
+{
+"name": "linear_getProjectUpdateById",
+"description": "Get a specific Linear project update by ID",
+"properties": {
+"id": {
+"description": "ID of the project update to retrieve"
+}
+}
+},
+{
+"name": "linear_getProjectUpdates",
+"description": "Get all updates associated with a project",
+"properties": {
+"projectId": {
+"description": "ID of the project to get updates for"
+},
+"limit": {
+"description": "Maximum number of project updates to return (default: 25)"
+}
+}
+},
+{
+"name": "linear_archiveProjectUpdate",
+"description": "Archive a Linear project update",
+"properties": {
+"id": {
+"description": "ID of the project update to archive"
+}
+}
+},
+{
+"name": "linear_unarchiveProjectUpdate",
+"description": "Restore an archived Linear project update",
+"properties": {
+"id": {
+"description": "ID of the project update to restore"
+}
+}
+},
+{
+"name": "linear_deleteProjectUpdate",
+"description": "Delete a Linear project update",
+"properties": {
+"id": {
+"description": "ID of the project update to delete"
+}
+}
+},
+{
+"name": "linear_archiveProject",
+"description": "Archive a project",
+"properties": {
+"projectId": {
+"description": "ID of the project to archive"
+}
+}
+},
+{
+"name": "linear_addIssueToProject",
+"description": "Add an existing issue to a project",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to add to the project"
+},
+"projectId": {
+"description": "ID of the project to add the issue to"
+}
+}
+},
+{
+"name": "linear_removeIssueFromProject",
+"description": "Remove an existing issue from a project",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to remove from the project"
+},
+"projectId": {
+"description": "ID of the project to remove the issue from"
+}
+}
+},
+{
+"name": "linear_getProjectIssues",
+"description": "Get issues associated with a project, with PM-friendly filters like state, assignee, labels, cycle, and milestone",
+"properties": {
+"projectId": {
+"description": "ID of the project to get issues for"
+},
+"limit": {
+"description": "Maximum number of issues to return (default: 25)"
+},
+"states": {
+"description": "Filter issues by workflow state names"
+},
+"assigneeId": {
+"description": "Filter issues by assignee ID"
+},
+"labelIds": {
+"description": "Filter issues by label IDs"
+},
+"cycleId": {
+"description": "Filter issues by cycle ID"
+},
+"projectMilestoneId": {
+"description": "Filter issues by project milestone ID"
+},
+"includeCompleted": {
+"description": "Include completed issues in the result set (default: true)"
+},
+"orderBy": {
+"description": "Sort issues by created or updated date"
+}
+}
+},
+{
+"name": "linear_getProjectMembers",
+"description": "Get members assigned to a project",
+"properties": {
+"projectId": {
+"description": "ID of the project to inspect"
+},
+"limit": {
+"description": "Maximum number of members to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived members"
+},
+"includeDisabled": {
+"description": "Include disabled users"
+},
+"orderBy": {
+"description": "Sort members by created or updated date when supported"
+}
+}
+},
+{
+"name": "linear_addProjectMember",
+"description": "Add a member to a project",
+"properties": {
+"projectId": {
+"description": "ID of the project to update"
+},
+"userId": {
+"description": "ID of the user to add"
+}
+}
+},
+{
+"name": "linear_removeProjectMember",
+"description": "Remove a member from a project",
+"properties": {
+"projectId": {
+"description": "ID of the project to update"
+},
+"userId": {
+"description": "ID of the user to remove"
+}
+}
+},
+{
+"name": "linear_getRoadmaps",
+"description": "Get a list of roadmaps from Linear",
+"properties": {
+"limit": {
+"description": "Maximum number of roadmaps to return (default: 25)"
+},
+"includeArchived": {
+"description": "Whether to include archived roadmaps in the results"
+},
+"orderBy": {
+"description": "Sort order field. Supported values: createdAt or updatedAt"
+}
+}
+},
+{
+"name": "linear_getRoadmapById",
+"description": "Get details of a specific roadmap by ID",
+"properties": {
+"id": {
+"description": "The ID of the roadmap to retrieve"
+}
+}
+},
+{
+"name": "linear_createRoadmap",
+"description": "Create a new roadmap in Linear",
+"properties": {
+"name": {
+"description": "The name of the roadmap"
+},
+"description": {
+"description": "The description of the roadmap"
+},
+"color": {
+"description": "The roadmap color"
+},
+"ownerId": {
+"description": "The ID of the roadmap owner"
+},
+"sortOrder": {
+"description": "The sort order of the roadmap within the organization"
+}
+}
+},
+{
+"name": "linear_updateRoadmap",
+"description": "Update an existing roadmap",
+"properties": {
+"id": {
+"description": "The ID of the roadmap to update"
+},
+"name": {
+"description": "The new name of the roadmap"
+},
+"description": {
+"description": "The new description of the roadmap"
+},
+"color": {
+"description": "The new roadmap color"
+},
+"ownerId": {
+"description": "The ID of the new roadmap owner"
+},
+"sortOrder": {
+"description": "The new sort order of the roadmap"
+}
+}
+},
+{
+"name": "linear_archiveRoadmap",
+"description": "Archive a roadmap",
+"properties": {
+"roadmapId": {
+"description": "The ID of the roadmap to archive"
+}
+}
+},
+{
+"name": "linear_getReleasePipelines",
+"description": "Get release pipelines from Linear",
+"properties": {
+"limit": {
+"description": "Maximum number of release pipelines to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived release pipelines in the results"
+},
+"orderBy": {
+"description": "Sort release pipelines by created or updated date"
+}
+}
+},
+{
+"name": "linear_getReleasePipelineById",
+"description": "Get details of a specific release pipeline",
+"properties": {
+"id": {
+"description": "The ID or slug of the release pipeline to retrieve"
+}
+}
+},
+{
+"name": "linear_createReleasePipeline",
+"description": "Create a new release pipeline",
+"properties": {
+"name": {
+"description": "The name of the release pipeline"
+},
+"teamIds": {
+"description": "The team identifiers associated with the pipeline"
+},
+"type": {
+"description": "The pipeline type"
+},
+"slugId": {
+"description": "Optional unique slug identifier for the pipeline"
+},
+"isProduction": {
+"description": "Whether the pipeline targets a production environment"
+},
+"includePathPatterns": {
+"description": "Optional glob patterns to limit matched commits by file path"
+}
+}
+},
+{
+"name": "linear_updateReleasePipeline",
+"description": "Update an existing release pipeline. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "The ID of the release pipeline to update"
+},
+"name": {
+"description": "The updated pipeline name"
+},
+"teamIds": {
+"description": "The updated team identifiers for the pipeline"
+},
+"type": {
+"description": "The updated pipeline type"
+},
+"slugId": {
+"description": "The updated pipeline slug identifier"
+},
+"isProduction": {
+"description": "Whether the pipeline targets production"
+},
+"includePathPatterns": {
+"description": "Updated glob patterns to include matching commit paths"
+}
+}
+},
+{
+"name": "linear_archiveReleasePipeline",
+"description": "Archive a release pipeline",
+"properties": {
+"pipelineId": {
+"description": "The ID of the release pipeline to archive"
+}
+}
+},
+{
+"name": "linear_unarchiveReleasePipeline",
+"description": "Unarchive a release pipeline",
+"properties": {
+"pipelineId": {
+"description": "The ID of the release pipeline to unarchive"
+}
+}
+},
+{
+"name": "linear_deleteReleasePipeline",
+"description": "Delete a release pipeline",
+"properties": {
+"pipelineId": {
+"description": "The ID of the release pipeline to delete"
+}
+}
+},
+{
+"name": "linear_getReleases",
+"description": "Get releases from Linear with optional pipeline and stage filters",
+"properties": {
+"limit": {
+"description": "Maximum number of releases to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived releases in the results"
+},
+"orderBy": {
+"description": "Sort releases by created or updated date"
+},
+"pipelineId": {
+"description": "Filter releases by release pipeline ID"
+},
+"stageId": {
+"description": "Filter releases by release stage ID"
+}
+}
+},
+{
+"name": "linear_getReleaseById",
+"description": "Get details of a specific release",
+"properties": {
+"id": {
+"description": "The ID or slug of the release to retrieve"
+}
+}
+},
+{
+"name": "linear_searchReleases",
+"description": "Search releases by term, version, or pipeline name",
+"properties": {
+"term": {
+"description": "Search term to match against release name, version, or pipeline name"
+},
+"limit": {
+"description": "Maximum number of releases to return (default: 20)"
+},
+"includeArchived": {
+"description": "Include archived releases in the search results"
+},
+"pipelineId": {
+"description": "Filter search results by release pipeline ID"
+},
+"stageId": {
+"description": "Filter search results by release stage ID"
+}
+}
+},
+{
+"name": "linear_getReleaseStages",
+"description": "Get release stages from Linear",
+"properties": {
+"limit": {
+"description": "Maximum number of release stages to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived release stages in the results"
+},
+"orderBy": {
+"description": "Sort release stages by created or updated date"
+},
+"pipelineId": {
+"description": "Filter release stages by release pipeline ID"
+}
+}
+},
+{
+"name": "linear_createReleaseStage",
+"description": "Create a new release stage in a pipeline",
+"properties": {
+"pipelineId": {
+"description": "The ID of the release pipeline that owns the stage"
+},
+"name": {
+"description": "The name of the release stage"
+},
+"color": {
+"description": "The UI color for the stage as a HEX string"
+},
+"position": {
+"description": "The position of the stage within the pipeline"
+},
+"type": {
+"description": "The stage type"
+},
+"frozen": {
+"description": "Whether the started stage should be frozen"
+},
+"id": {
+"description": "Optional explicit UUID for the stage"
+}
+}
+},
+{
+"name": "linear_updateReleaseStage",
+"description": "Update an existing release stage. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "The ID of the release stage to update"
+},
+"name": {
+"description": "The updated stage name"
+},
+"color": {
+"description": "The updated UI color as a HEX string"
+},
+"position": {
+"description": "The updated stage position"
+},
+"frozen": {
+"description": "Whether the started stage should be frozen"
+}
+}
+},
+{
+"name": "linear_archiveReleaseStage",
+"description": "Archive a release stage",
+"properties": {
+"stageId": {
+"description": "The ID of the release stage to archive"
+}
+}
+},
+{
+"name": "linear_unarchiveReleaseStage",
+"description": "Unarchive a release stage",
+"properties": {
+"stageId": {
+"description": "The ID of the release stage to unarchive"
+}
+}
+},
+{
+"name": "linear_getReleaseNotes",
+"description": "Get release notes from Linear",
+"properties": {
+"limit": {
+"description": "Maximum number of release notes to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived release notes in the results"
+},
+"orderBy": {
+"description": "Sort release notes by created or updated date"
+}
+}
+},
+{
+"name": "linear_getReleaseNoteById",
+"description": "Get details of a specific release note",
+"properties": {
+"id": {
+"description": "The ID or slug of the release note to retrieve"
+}
+}
+},
+{
+"name": "linear_createRelease",
+"description": "Create a new release in a release pipeline",
+"properties": {
+"pipelineId": {
+"description": "The ID of the release pipeline this release belongs to"
+},
+"name": {
+"description": "The name of the release"
+},
+"version": {
+"description": "The version identifier for the release"
+},
+"description": {
+"description": "The release description in markdown or plain text"
+},
+"commitSha": {
+"description": "The Git commit SHA associated with the release"
+},
+"stageId": {
+"description": "Optional stage ID for the release"
+},
+"startDate": {
+"description": "Optional estimated start date in YYYY-MM-DD format"
+},
+"targetDate": {
+"description": "Optional estimated completion date in YYYY-MM-DD format"
+},
+"createdAt": {
+"description": "Optional creation timestamp for a backfilled release (ISO 8601)"
+},
+"startedAt": {
+"description": "Optional actual start timestamp for a backfilled release (ISO 8601)"
+},
+"completedAt": {
+"description": "Optional actual completion timestamp for a backfilled release (ISO 8601)"
+}
+}
+},
+{
+"name": "linear_updateRelease",
+"description": "Update an existing release. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "The ID of the release to update"
+},
+"name": {
+"description": "The updated release name"
+},
+"version": {
+"description": "The updated release version"
+},
+"description": {
+"description": "The updated release description"
+},
+"commitSha": {
+"description": "The updated Git commit SHA"
+},
+"pipelineId": {
+"description": "The updated release pipeline ID"
+},
+"stageId": {
+"description": "The updated release stage ID"
+},
+"startDate": {
+"description": "The updated start date in YYYY-MM-DD format"
+},
+"targetDate": {
+"description": "The updated target date in YYYY-MM-DD format"
+},
+"startedAt": {
+"description": "The updated actual start timestamp (ISO 8601)"
+},
+"completedAt": {
+"description": "The updated actual completion timestamp (ISO 8601)"
+},
+"trashed": {
+"description": "Whether the release should be marked as trashed"
+}
+}
+},
+{
+"name": "linear_completeRelease",
+"description": "Mark a release as completed within a pipeline. The target pipeline must already have a completed release stage configured.",
+"properties": {
+"pipelineId": {
+"description": "The ID of the release pipeline containing the release"
+},
+"version": {
+"description": "Optional release version to complete; defaults to the latest started release"
+}
+}
+},
+{
+"name": "linear_archiveRelease",
+"description": "Archive a release",
+"properties": {
+"releaseId": {
+"description": "The ID of the release to archive"
+}
+}
+},
+{
+"name": "linear_unarchiveRelease",
+"description": "Unarchive a release",
+"properties": {
+"releaseId": {
+"description": "The ID of the release to unarchive"
+}
+}
+},
+{
+"name": "linear_addIssueToRelease",
+"description": "Add an issue to a release",
+"properties": {
+"issueId": {
+"description": "The ID or identifier of the issue to add"
+},
+"releaseId": {
+"description": "The ID of the release to add the issue to"
+}
+}
+},
+{
+"name": "linear_removeIssueFromRelease",
+"description": "Remove an issue from a release",
+"properties": {
+"issueId": {
+"description": "The ID or identifier of the issue to remove"
+},
+"releaseId": {
+"description": "The ID of the release to remove the issue from"
+}
+}
+},
+{
+"name": "linear_createReleaseNote",
+"description": "Create a release note using either explicit release IDs or a release range within a pipeline",
+"properties": {
+"pipelineId": {
+"description": "The ID of the release pipeline that owns the release note"
+},
+"content": {
+"description": "Optional release note content in markdown"
+},
+"releaseIds": {
+"description": "Explicit release IDs to include in the note"
+},
+"rangeFromReleaseId": {
+"description": "Oldest release ID in the release note range"
+},
+"rangeToReleaseId": {
+"description": "Newest release ID in the release note range"
+}
+}
+},
+{
+"name": "linear_updateReleaseNote",
+"description": "Update a release note using either explicit release IDs or a release range. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "The ID of the release note to update"
+},
+"content": {
+"description": "Updated release note content in markdown"
+},
+"releaseIds": {
+"description": "Explicit release IDs to set on the note"
+},
+"rangeFromReleaseId": {
+"description": "Updated oldest release ID in the note range"
+},
+"rangeToReleaseId": {
+"description": "Updated newest release ID in the note range"
+}
+}
+},
+{
+"name": "linear_deleteReleaseNote",
+"description": "Delete a release note",
+"properties": {
+"id": {
+"description": "The ID of the release note to delete"
+}
+}
+},
+{
+"name": "linear_getMilestones",
+"description": "Get project milestones from Linear, with PM-friendly filters for project, team, and milestone status",
+"properties": {
+"includeArchived": {
+"description": "Include archived milestones in the results"
+},
+"limit": {
+"description": "Maximum number of milestones to return"
+},
+"projectId": {
+"description": "Filter milestones by project ID"
+},
+"teamId": {
+"description": "Filter milestones by team ID via the milestone project membership"
+},
+"status": {
+"description": "Filter milestones by milestone status"
+},
+"orderBy": {
+"description": "Sort milestones by created or updated date"
+}
+}
+},
+{
+"name": "linear_getMilestoneById",
+"description": "Get details of a specific project milestone by ID",
+"properties": {
+"id": {
+"description": "The ID of the milestone to retrieve"
+}
+}
+},
+{
+"name": "linear_createMilestone",
+"description": "Create a new project milestone in Linear",
+"properties": {
+"name": {
+"description": "Name of the milestone"
+},
+"projectId": {
+"description": "ID of the project the milestone belongs to"
+},
+"description": {
+"description": "Description of the milestone in markdown format"
+},
+"targetDate": {
+"description": "Planned target date for the milestone (YYYY-MM-DD format)"
+},
+"sortOrder": {
+"description": "Sort order for the milestone within its project"
+}
+}
+},
+{
+"name": "linear_updateMilestone",
+"description": "Update an existing project milestone in Linear. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "ID of the milestone to update"
+},
+"name": {
+"description": "Updated name of the milestone"
+},
+"projectId": {
+"description": "Updated project ID for the milestone"
+},
+"description": {
+"description": "Updated milestone description in markdown format"
+},
+"targetDate": {
+"description": "Updated planned target date for the milestone (YYYY-MM-DD format)"
+},
+"sortOrder": {
+"description": "Updated sort order for the milestone within its project"
+}
+}
+},
+{
+"name": "linear_archiveMilestone",
+"description": "Archive a project milestone",
+"properties": {
+"id": {
+"description": "ID of the milestone to archive"
+}
+}
+},
+{
+"name": "linear_getDocuments",
+"description": "Get workspace documents from Linear",
+"properties": {
+"limit": {
+"description": "Maximum number of documents to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived documents in the results"
+},
+"orderBy": {
+"description": "Sort documents by created or updated date"
+},
+"projectId": {
+"description": "Filter documents by project ID"
+},
+"initiativeId": {
+"description": "Filter documents by initiative ID"
+},
+"teamId": {
+"description": "Filter documents by team ID"
+},
+"issueId": {
+"description": "Filter documents by issue ID"
+},
+"releaseId": {
+"description": "Filter documents by release ID"
+},
+"cycleId": {
+"description": "Filter documents by cycle ID"
+},
+"title": {
+"description": "Case-insensitive title search filter"
+}
+}
+},
+{
+"name": "linear_getDocumentById",
+"description": "Get details of a specific Linear document",
+"properties": {
+"id": {
+"description": "ID of the document to retrieve"
+}
+}
+},
+{
+"name": "linear_getProjectDocuments",
+"description": "Get documents for a specific Linear project",
+"properties": {
+"projectId": {
+"description": "ID of the project whose documents should be returned"
+},
+"limit": {
+"description": "Maximum number of documents to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived documents in the results"
+},
+"orderBy": {
+"description": "Sort documents by created or updated date"
+},
+"title": {
+"description": "Case-insensitive title search filter"
+}
+}
+},
+{
+"name": "linear_getInitiativeDocuments",
+"description": "Get documents for a specific Linear initiative",
+"properties": {
+"initiativeId": {
+"description": "ID of the initiative whose documents should be returned"
+},
+"limit": {
+"description": "Maximum number of documents to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived documents in the results"
+},
+"orderBy": {
+"description": "Sort documents by created or updated date"
+},
+"title": {
+"description": "Case-insensitive title search filter"
+}
+}
+},
+{
+"name": "linear_getTeamDocuments",
+"description": "Get documents associated with a specific Linear team",
+"properties": {
+"teamId": {
+"description": "ID of the team whose documents should be returned"
+},
+"limit": {
+"description": "Maximum number of documents to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived documents in the results"
+},
+"orderBy": {
+"description": "Sort documents by created or updated date"
+},
+"title": {
+"description": "Case-insensitive title search filter"
+}
+}
+},
+{
+"name": "linear_getIssueDocuments",
+"description": "Get documents associated with a specific Linear issue",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue whose documents should be returned"
+},
+"limit": {
+"description": "Maximum number of documents to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived documents in the results"
+},
+"orderBy": {
+"description": "Sort documents by created or updated date"
+},
+"title": {
+"description": "Case-insensitive title search filter"
+}
+}
+},
+{
+"name": "linear_getReleaseDocuments",
+"description": "Get documents associated with a specific Linear release",
+"properties": {
+"releaseId": {
+"description": "ID of the release whose documents should be returned"
+},
+"limit": {
+"description": "Maximum number of documents to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived documents in the results"
+},
+"orderBy": {
+"description": "Sort documents by created or updated date"
+},
+"title": {
+"description": "Case-insensitive title search filter"
+}
+}
+},
+{
+"name": "linear_getCycleDocuments",
+"description": "Get documents associated with a specific Linear cycle",
+"properties": {
+"cycleId": {
+"description": "ID of the cycle whose documents should be returned"
+},
+"limit": {
+"description": "Maximum number of documents to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived documents in the results"
+},
+"orderBy": {
+"description": "Sort documents by created or updated date"
+},
+"title": {
+"description": "Case-insensitive title search filter"
+}
+}
+},
+{
+"name": "linear_getTeamResources",
+"description": "Get team home resource sections and pinned documents or external links",
+"properties": {
+"teamId": {
+"description": "ID of the team whose home resources should be returned"
+}
+}
+},
+{
+"name": "linear_searchDocuments",
+"description": "Search Linear documents by term",
+"properties": {
+"term": {
+"description": "Search term for document titles and content"
+},
+"teamId": {
+"description": "Optional team ID to scope the search"
+},
+"includeComments": {
+"description": "Include comment matches in the search payload when supported"
+},
+"limit": {
+"description": "Maximum number of results to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived documents in the search"
+},
+"orderBy": {
+"description": "Sort results by created or updated date"
+},
+"snippetSize": {
+"description": "Optional snippet size for search result context"
+}
+}
+},
+{
+"name": "linear_getDocumentContentHistory",
+"description": "Get content history entries for a Linear document content record",
+"properties": {
+"id": {
+"description": "Document content ID to inspect"
+}
+}
+},
+{
+"name": "linear_createDocument",
+"description": "Create a new Linear document",
+"properties": {
+"title": {
+"description": "Document title"
+},
+"content": {
+"description": "Markdown content for the document"
+},
+"icon": {
+"description": "Icon for the document"
+},
+"color": {
+"description": "Icon color for the document"
+},
+"projectId": {
+"description": "Optional project associated with the document"
+},
+"initiativeId": {
+"description": "Optional initiative associated with the document"
+},
+"teamId": {
+"description": "Optional team associated with the document"
+},
+"issueId": {
+"description": "Optional issue associated with the document"
+},
+"releaseId": {
+"description": "Optional release associated with the document"
+},
+"cycleId": {
+"description": "Optional cycle associated with the document"
+},
+"resourceFolderId": {
+"description": "Optional resource folder containing the document"
+},
+"lastAppliedTemplateId": {
+"description": "Optional template last applied to the document"
+},
+"sortOrder": {
+"description": "Optional sort order in the resources list"
+}
+}
+},
+{
+"name": "linear_updateDocument",
+"description": "Update an existing Linear document. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "ID of the document to update"
+},
+"title": {
+"description": "Updated document title"
+},
+"content": {
+"description": "Updated markdown content. Pass null to clear it."
+},
+"icon": {
+"description": "Updated icon. Pass null to clear it."
+},
+"color": {
+"description": "Updated icon color. Pass null to clear it."
+},
+"hiddenAt": {
+"description": "ISO timestamp for hiding the document. Pass null to clear it."
+},
+"projectId": {
+"description": "Updated project association. Pass null to clear it."
+},
+"initiativeId": {
+"description": "Updated initiative association. Pass null to clear it."
+},
+"teamId": {
+"description": "Updated team association. Pass null to clear it."
+},
+"issueId": {
+"description": "Updated issue association. Pass null to clear it."
+},
+"releaseId": {
+"description": "Updated release association. Pass null to clear it."
+},
+"cycleId": {
+"description": "Updated cycle association. Pass null to clear it."
+},
+"resourceFolderId": {
+"description": "Updated resource folder association. Pass null to clear it."
+},
+"lastAppliedTemplateId": {
+"description": "Updated last applied template. Pass null to clear it."
+},
+"sortOrder": {
+"description": "Updated sort order in the resources list"
+},
+"trashed": {
+"description": "Whether the document should be marked as trashed"
+}
+}
+},
+{
+"name": "linear_archiveDocument",
+"description": "Archive (trash) a Linear document",
+"properties": {
+"id": {
+"description": "ID of the document to archive"
+}
+}
+},
+{
+"name": "linear_unarchiveDocument",
+"description": "Restore a previously archived Linear document",
+"properties": {
+"id": {
+"description": "ID of the document to restore"
+}
+}
+},
+{
+"name": "linear_getRateLimitStatus",
+"description": "Get the shared MCP-side Linear rate-limit cooldown and retry snapshot",
+"properties": {}
+},
+{
+"name": "linear_getServerStatus",
+"description": "Get MCP Linear server runtime status, counts, and current rate-limit snapshot",
+"properties": {}
+},
+{
+"name": "linear_generateOAuthApplicationSetup",
+"description": "Generate an official Linear OAuth application manifest and a human-confirmed setup URL. This does not create the application; an authorized workspace admin or owner must review and submit it in Linear.",
+"properties": {
+"name": {
+"description": "OAuth client name. Must not contain \"Linear\" or an http(s) URL."
+},
+"developer": {
+"description": ""
+},
+"developerUrl": {
+"description": ""
+},
+"description": {
+"description": ""
+},
+"imageUrl": {
+"description": ""
+},
+"distribution": {
+"description": ""
+},
+"redirectUris": {
+"description": ""
+},
+"grantTypes": {
+"description": ""
+},
+"webhookEnabled": {
+"description": ""
+},
+"webhookUrl": {
+"description": ""
+},
+"webhookResourceTypes": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_generateOAuthAuthorizationUrl",
+"description": "Generate a Linear OAuth authorization URL. Scopes are requested during authorization; this tool does not create, grant, approve, persist, or modify scopes. Actor/scope rules: with actor: \"app\" the admin scope is rejected, and the agent-only scopes (app:assignable, app:mentionable, customer:read, customer:write, initiative:read, initiative:write) require actor: \"app\".",
+"properties": {
+"clientId": {
+"description": ""
+},
+"redirectUri": {
+"description": ""
+},
+"scopes": {
+"description": "Scopes to request. The read scope is always included. app:assignable, app:mentionable, customer:*, and initiative:* scopes require actor: \"app\"; admin is unavailable with actor: \"app\"."
+},
+"actor": {
+"description": ""
+},
+"state": {
+"description": ""
+},
+"promptConsent": {
+"description": ""
+},
+"codeChallenge": {
+"description": "RFC 7636 S256 PKCE challenge: exactly 43 base64url characters. The method is set to S256 automatically."
+}
+}
+},
+{
+"name": "linear_createOAuthClientCredentialsToken",
+"description": "Issue a scoped Linear app-actor access token through the client_credentials grant for server-to-server pipelines. The token is returned once, has no refresh token, and is normally valid for 30 days. If the requested scope set differs from existing app-actor tokens, Linear revokes those existing tokens.",
+"properties": {
+"clientId": {
+"description": ""
+},
+"clientSecret": {
+"description": "The OAuth application client secret. It is sent only to Linear's token endpoint."
+},
+"scopes": {
+"description": "Scopes for the app-actor token. The read scope is always included."
+},
+"confirmSecretExposure": {
+"description": "Must be true to acknowledge that a one-time secret will be returned in the MCP tool result."
+},
+"confirmScopeChangeRisk": {
+"description": "Must be true to acknowledge that requesting a different scope set revokes existing app-actor tokens for this OAuth application."
+}
+}
+},
+{
+"name": "linear_getManagedOAuthApplications",
+"description": "List alpha child OAuth applications owned by the calling OAuth application. This is not a workspace-wide OAuth application admin listing and does not work as generic scope CRUD.",
+"properties": {}
+},
+{
+"name": "linear_getManagedOAuthApplicationById",
+"description": "Get an alpha child OAuth application owned by the calling OAuth application. It cannot retrieve an arbitrary workspace OAuth application.",
+"properties": {
+"id": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_createManagedOAuthApplication",
+"description": "Create an alpha child OAuth application owned by the calling OAuth application. This is not the human setup flow and returns one-time client and optional webhook secrets in the MCP result. It cannot set distribution or pre-grant OAuth scopes.",
+"properties": {
+"name": {
+"description": "OAuth client name. Must not contain \"Linear\" or an http(s) URL."
+},
+"developer": {
+"description": ""
+},
+"developerUrl": {
+"description": ""
+},
+"description": {
+"description": ""
+},
+"imageUrl": {
+"description": ""
+},
+"redirectUris": {
+"description": ""
+},
+"grantTypes": {
+"description": ""
+},
+"idempotencyKey": {
+"description": ""
+},
+"webhookUrl": {
+"description": ""
+},
+"webhookResourceTypes": {
+"description": ""
+},
+"confirmSecretExposure": {
+"description": "Must be true to acknowledge that a one-time secret will be returned in the MCP tool result."
+}
+}
+},
+{
+"name": "linear_updateManagedOAuthApplication",
+"description": "Update metadata, grant capabilities, or webhook configuration for an alpha child app owned by the calling OAuth application. This does not grant or approve token scopes.",
+"properties": {
+"id": {
+"description": ""
+},
+"name": {
+"description": "OAuth client name. Must not contain \"Linear\" or an http(s) URL."
+},
+"developer": {
+"description": ""
+},
+"developerUrl": {
+"description": ""
+},
+"description": {
+"description": ""
+},
+"imageUrl": {
+"description": ""
+},
+"redirectUris": {
+"description": ""
+},
+"grantTypes": {
+"description": ""
+},
+"webhookEnabled": {
+"description": ""
+},
+"webhookUrl": {
+"description": ""
+},
+"webhookResourceTypes": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_archiveManagedOAuthApplication",
+"description": "Archive an alpha child OAuth application owned by the calling OAuth application. This does not revoke an unrelated authorized application.",
+"properties": {
+"id": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_rotateManagedOAuthApplicationSecret",
+"description": "Rotate the client secret of an alpha child app owned by the calling OAuth application. The new one-time secret is exposed in the MCP result and existing client-credentials tokens may be invalidated.",
+"properties": {
+"id": {
+"description": ""
+},
+"confirmSecretExposure": {
+"description": "Must be true to acknowledge that a one-time secret will be returned in the MCP tool result."
+}
+}
+},
+{
+"name": "linear_rotateManagedOAuthApplicationWebhookSecret",
+"description": "Rotate the webhook signing secret of an alpha child app owned by the calling OAuth application. The new one-time secret is exposed in the MCP result.",
+"properties": {
+"id": {
+"description": ""
+},
+"confirmSecretExposure": {
+"description": "Must be true to acknowledge that a one-time secret will be returned in the MCP tool result."
+}
+}
+},
+{
+"name": "linear_getWebhookById",
+"description": "Get one ordinary workspace webhook by ID.",
+"properties": {
+"id": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getWebhooks",
+"description": "Get a list of webhooks",
+"properties": {
+"teamId": {
+"description": ""
+},
+"limit": {
+"description": ""
+},
+"includeArchived": {
+"description": ""
+},
+"orderBy": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_createWebhook",
+"description": "Create a webhook for integration events",
+"properties": {
+"url": {
+"description": ""
+},
+"resourceTypes": {
+"description": ""
+},
+"teamId": {
+"description": ""
+},
+"enabled": {
+"description": ""
+},
+"label": {
+"description": ""
+},
+"secret": {
+"description": ""
+},
+"allPublicTeams": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_updateWebhook",
+"description": "Update an ordinary workspace webhook.",
+"properties": {
+"id": {
+"description": ""
+},
+"url": {
+"description": ""
+},
+"label": {
+"description": ""
+},
+"enabled": {
+"description": ""
+},
+"resourceTypes": {
+"description": ""
+},
+"secret": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_rotateWebhookSecret",
+"description": "Rotate an ordinary workspace webhook signing secret.",
+"properties": {
+"id": {
+"description": ""
+},
+"confirmSecretExposure": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_deleteWebhook",
+"description": "Delete a webhook",
+"properties": {
+"id": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getAttachments",
+"description": "Get attachments for an issue",
+"properties": {
+"issueId": {
+"description": ""
+},
+"limit": {
+"description": ""
+},
+"includeArchived": {
+"description": ""
+},
+"orderBy": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_addAttachment",
+"description": "Add an attachment to an issue",
+"properties": {
+"issueId": {
+"description": ""
+},
+"title": {
+"description": ""
+},
+"url": {
+"description": ""
+},
+"subtitle": {
+"description": ""
+},
+"iconUrl": {
+"description": ""
+},
+"metadata": {
+"description": ""
+},
+"commentBody": {
+"description": ""
+},
+"groupBySource": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getNotifications",
+"description": "Get notifications for the current user",
+"properties": {
+"limit": {
+"description": ""
+},
+"includeArchived": {
+"description": ""
+},
+"orderBy": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_markNotificationAsRead",
+"description": "Mark a notification as read",
+"properties": {
+"id": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getSubscriptions",
+"description": "Get subscriptions for the current user",
+"properties": {
+"limit": {
+"description": ""
+},
+"includeArchived": {
+"description": ""
+},
+"orderBy": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_markAllNotificationsAsRead",
+"description": "Mark all notifications as read",
+"properties": {
+"limit": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getUnreadNotificationCount",
+"description": "Get count of unread notifications",
+"properties": {
+"limit": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getAuthenticationSessions",
+"description": "Get active authentication sessions",
+"properties": {}
+},
+{
+"name": "linear_logoutSession",
+"description": "Revoke a specific session",
+"properties": {
+"sessionId": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_logoutOtherSessions",
+"description": "Revoke all other sessions",
+"properties": {}
+},
+{
+"name": "linear_logoutAllSessions",
+"description": "Revoke all sessions",
+"properties": {}
+},
+{
+"name": "linear_getOrganizationAuditEvents",
+"description": "Get audit events for the organization",
+"properties": {
+"limit": {
+"description": ""
+},
+"includeArchived": {
+"description": ""
+},
+"orderBy": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getUserAuditEvents",
+"description": "Get audit events for a specific user",
+"properties": {
+"userId": {
+"description": ""
+},
+"limit": {
+"description": ""
+},
+"includeArchived": {
+"description": ""
+},
+"orderBy": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getIntegrations",
+"description": "Get a list of active integrations",
+"properties": {
+"limit": {
+"description": ""
+},
+"includeArchived": {
+"description": ""
+},
+"orderBy": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_getSavedViews",
+"description": "Get Linear saved views (API: CustomView)",
+"properties": {
+"limit": {
+"description": "Maximum number of saved views to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived saved views in the results"
+},
+"orderBy": {
+"description": "Sort order field. Supported values: 'createdAt' or 'updatedAt'"
+}
+}
+},
+{
+"name": "linear_createSavedView",
+"description": "Create a Linear saved view (API: createCustomView)",
+"properties": {
+"name": {
+"description": "Saved view name"
+},
+"description": {
+"description": "Saved view description"
+},
+"shared": {
+"description": "Whether the saved view is shared across the organization"
+},
+"icon": {
+"description": "Icon for the saved view"
+},
+"color": {
+"description": "Icon color for the saved view"
+},
+"teamId": {
+"description": "Optional team associated with the saved view"
+},
+"projectId": {
+"description": "Optional project associated with the saved view"
+},
+"ownerId": {
+"description": "Optional owner for the saved view"
+},
+"filters": {
+"description": "Raw filters object to store on the saved view"
+},
+"filterData": {
+"description": "Issue filter data for the saved view"
+},
+"projectFilterData": {
+"description": "Project filter data for the saved view"
+}
+}
+},
+{
+"name": "linear_updateSavedView",
+"description": "Update a Linear saved view (API: updateCustomView). Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "ID of the saved view to update"
+},
+"name": {
+"description": "Updated saved view name"
+},
+"description": {
+"description": "Updated saved view description. Pass null to clear it."
+},
+"shared": {
+"description": "Whether the saved view is shared across the organization"
+},
+"icon": {
+"description": "Updated icon for the saved view. Pass null to clear it."
+},
+"color": {
+"description": "Updated icon color for the saved view. Pass null to clear it."
+},
+"teamId": {
+"description": "Updated team associated with the saved view. Pass null to clear it."
+},
+"projectId": {
+"description": "Updated project associated with the saved view. Pass null to clear it."
+},
+"ownerId": {
+"description": "Updated owner for the saved view. Pass null to clear it."
+},
+"filters": {
+"description": "Updated raw filters object to store on the saved view. Pass null to clear it."
+},
+"filterData": {
+"description": "Updated issue filter data for the saved view. Pass null to clear it."
+},
+"projectFilterData": {
+"description": "Updated project filter data for the saved view. Pass null to clear it."
+}
+}
+},
+{
+"name": "linear_deleteSavedView",
+"description": "Delete a Linear saved view (API: deleteCustomView)",
+"properties": {
+"id": {
+"description": "ID of the saved view to delete"
+}
+}
+},
+{
+"name": "linear_getFavoriteViews",
+"description": "Get favorite Linear views, including saved views and predefined views",
+"properties": {
+"limit": {
+"description": "Maximum number of favorite entries to inspect (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived favorites in the results"
+},
+"orderBy": {
+"description": "Sort order field. Supported values: 'createdAt' or 'updatedAt'"
+}
+}
+},
+{
+"name": "linear_addToFavorites",
+"description": "Add an entity to the current user's Linear favorites",
+"properties": {
+"entityId": {
+"description": "ID of the Linear entity to add to favorites"
+}
+}
+},
+{
+"name": "linear_removeFromFavorites",
+"description": "Remove an entity or favorite entry from the current user's Linear favorites. Provide either favoriteId or entityId.",
+"properties": {
+"favoriteId": {
+"description": "Favorite entry ID to remove when available from a favorites query"
+},
+"entityId": {
+"description": "Entity ID to remove from favorites when the workspace schema supports it"
+}
+}
+},
+{
+"name": "linear_getCycles",
+"description": "Get a list of all cycles",
+"properties": {
+"teamId": {
+"description": "ID of the team to get cycles for (optional)"
+},
+"limit": {
+"description": "Maximum number of cycles to return (default: 25)"
+}
+}
+},
+{
+"name": "linear_getCycleById",
+"description": "Get details of a specific cycle",
+"properties": {
+"id": {
+"description": "ID of the cycle to retrieve"
+}
+}
+},
+{
+"name": "linear_createCycle",
+"description": "Create a new cycle",
+"properties": {
+"teamId": {
+"description": "ID of the team the cycle belongs to"
+},
+"startsAt": {
+"description": "Cycle start timestamp or date"
+},
+"endsAt": {
+"description": "Cycle end timestamp or date"
+},
+"name": {
+"description": "Optional custom cycle name"
+},
+"description": {
+"description": "Optional cycle description"
+},
+"completedAt": {
+"description": "Optional completion timestamp"
+}
+}
+},
+{
+"name": "linear_updateCycle",
+"description": "Update an existing cycle. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "ID of the cycle to update"
+},
+"startsAt": {
+"description": "Updated cycle start timestamp or date"
+},
+"endsAt": {
+"description": "Updated cycle end timestamp or date"
+},
+"name": {
+"description": "Updated custom cycle name"
+},
+"description": {
+"description": "Updated cycle description"
+},
+"completedAt": {
+"description": "Optional completion timestamp"
+}
+}
+},
+{
+"name": "linear_completeCycle",
+"description": "Mark a cycle as complete",
+"properties": {
+"id": {
+"description": "ID of the cycle to complete"
+}
+}
+},
+{
+"name": "linear_getCycleStats",
+"description": "Get statistics for a cycle",
+"properties": {
+"id": {
+"description": "ID of the cycle to inspect"
+}
+}
+},
+{
+"name": "linear_getActiveCycle",
+"description": "Get the currently active cycle for a team",
+"properties": {
+"teamId": {
+"description": "ID of the team to get the active cycle for"
+}
+}
+},
+{
+"name": "linear_getCycleIssues",
+"description": "Get issues in a cycle, with PM-friendly filters like state, assignee, labels, and completion status",
+"properties": {
+"cycleId": {
+"description": "ID of the cycle to get issues for"
+},
+"limit": {
+"description": "Maximum number of issues to return (default: 25)"
+},
+"states": {
+"description": "Filter cycle issues by workflow state names"
+},
+"assigneeId": {
+"description": "Filter cycle issues by assignee ID"
+},
+"labelIds": {
+"description": "Filter cycle issues by label IDs"
+},
+"includeCompleted": {
+"description": "Include completed issues in the result set (default: true)"
+},
+"orderBy": {
+"description": "Sort issues by created or updated date"
+}
+}
+},
+{
+"name": "linear_addIssueToCycle",
+"description": "Add an issue to a cycle",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to add to the cycle"
+},
+"cycleId": {
+"description": "ID of the cycle to add the issue to"
+}
+}
+},
+{
+"name": "linear_removeIssueFromCycle",
+"description": "Remove an issue from a cycle",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to remove from the cycle"
+},
+"cycleId": {
+"description": "ID of the cycle to remove the issue from"
+}
+}
+},
+{
+"name": "linear_getInitiatives",
+"description": "Get a list of all initiatives from Linear",
+"properties": {
+"includeArchived": {
+"description": "Include archived initiatives in the results"
+},
+"limit": {
+"description": "Maximum number of initiatives to return"
+}
+}
+},
+{
+"name": "linear_getInitiativeById",
+"description": "Get details of a specific initiative by ID",
+"properties": {
+"initiativeId": {
+"description": "The ID of the initiative to retrieve"
+},
+"includeProjects": {
+"description": "Include associated projects in the response"
+}
+}
+},
+{
+"name": "linear_createInitiative",
+"description": "Create a new initiative",
+"properties": {
+"name": {
+"description": "Name of the initiative"
+},
+"description": {
+"description": "Description of the initiative"
+},
+"content": {
+"description": "Content in markdown format"
+},
+"ownerId": {
+"description": "ID of the user who owns the initiative"
+},
+"targetDate": {
+"description": "Target completion date (ISO 8601 format)"
+},
+"status": {
+"description": "Status of the initiative"
+},
+"icon": {
+"description": "Icon emoji for the initiative"
+},
+"color": {
+"description": "Color of the initiative in hex format"
+}
+}
+},
+{
+"name": "linear_updateInitiative",
+"description": "Update an existing initiative",
+"properties": {
+"initiativeId": {
+"description": "The ID of the initiative to update"
+},
+"name": {
+"description": "Updated name of the initiative"
+},
+"description": {
+"description": "Updated description of the initiative"
+},
+"content": {
+"description": "Updated content in markdown format"
+},
+"ownerId": {
+"description": "Updated owner ID"
+},
+"targetDate": {
+"description": "Updated target completion date (ISO 8601 format)"
+},
+"status": {
+"description": "Updated status of the initiative"
+},
+"icon": {
+"description": "Updated icon emoji"
+},
+"color": {
+"description": "Updated color in hex format"
+}
+}
+},
+{
+"name": "linear_archiveInitiative",
+"description": "Archive an initiative",
+"properties": {
+"initiativeId": {
+"description": "The ID of the initiative to archive"
+}
+}
+},
+{
+"name": "linear_unarchiveInitiative",
+"description": "Unarchive an initiative",
+"properties": {
+"initiativeId": {
+"description": "The ID of the initiative to unarchive"
+}
+}
+},
+{
+"name": "linear_deleteInitiative",
+"description": "Delete an initiative (move to trash)",
+"properties": {
+"initiativeId": {
+"description": "The ID of the initiative to delete"
+}
+}
+},
+{
+"name": "linear_getInitiativeProjects",
+"description": "Get all projects associated with an initiative",
+"properties": {
+"initiativeId": {
+"description": "The ID of the initiative"
+},
+"includeArchived": {
+"description": "Include archived projects in the results"
+}
+}
+},
+{
+"name": "linear_getInitiativeUpdateById",
+"description": "Get a specific initiative update by ID",
+"properties": {
+"id": {
+"description": "ID of the initiative update to retrieve"
+}
+}
+},
+{
+"name": "linear_getInitiativeUpdates",
+"description": "Get updates for an initiative",
+"properties": {
+"initiativeId": {
+"description": "ID of the initiative to inspect"
+},
+"limit": {
+"description": "Maximum number of initiative updates to return (default: 25)"
+}
+}
+},
+{
+"name": "linear_createInitiativeUpdate",
+"description": "Create a new initiative update",
+"properties": {
+"initiativeId": {
+"description": "ID of the initiative to update"
+},
+"body": {
+"description": "Initiative update body in Markdown"
+},
+"health": {
+"description": "Optional health status for the initiative update"
+},
+"isDiffHidden": {
+"description": "Whether Linear should hide the diff against the previous update"
+}
+}
+},
+{
+"name": "linear_updateInitiativeUpdate",
+"description": "Update an existing initiative update",
+"properties": {
+"id": {
+"description": "ID of the initiative update to update"
+},
+"body": {
+"description": "Updated body in Markdown"
+},
+"health": {
+"description": "Updated health status"
+},
+"isDiffHidden": {
+"description": "Whether Linear should hide the diff against the previous update"
+}
+}
+},
+{
+"name": "linear_archiveInitiativeUpdate",
+"description": "Archive an initiative update",
+"properties": {
+"id": {
+"description": "ID of the initiative update to archive"
+}
+}
+},
+{
+"name": "linear_unarchiveInitiativeUpdate",
+"description": "Restore an archived initiative update",
+"properties": {
+"id": {
+"description": "ID of the initiative update to restore"
+}
+}
+},
+{
+"name": "linear_addProjectToInitiative",
+"description": "Add a project to an initiative",
+"properties": {
+"initiativeId": {
+"description": "The ID of the initiative"
+},
+"projectId": {
+"description": "The ID of the project to add"
+}
+}
+},
+{
+"name": "linear_removeProjectFromInitiative",
+"description": "Remove a project from an initiative",
+"properties": {
+"initiativeId": {
+"description": "The ID of the initiative"
+},
+"projectId": {
+"description": "The ID of the project to remove"
+}
+}
+},
+{
+"name": "linear_getCustomers",
+"description": "Get customers from Linear",
+"properties": {
+"limit": {
+"description": "Maximum customers to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived customers"
+},
+"orderBy": {
+"description": "Sort customers by created or updated date"
+},
+"name": {
+"description": "Filter customers by name"
+},
+"domain": {
+"description": "Filter customers by domain"
+},
+"statusId": {
+"description": "Filter customers by status ID"
+},
+"tierId": {
+"description": "Filter customers by tier ID"
+},
+"ownerId": {
+"description": "Filter customers by owner user ID"
+}
+}
+},
+{
+"name": "linear_getCustomerById",
+"description": "Get a customer by ID",
+"properties": {
+"id": {
+"description": "Customer ID"
+}
+}
+},
+{
+"name": "linear_createCustomer",
+"description": "Create a customer",
+"properties": {
+"name": {
+"description": "Customer name"
+},
+"domains": {
+"description": "Customer email domains"
+},
+"externalIds": {
+"description": "External system IDs"
+},
+"logoUrl": {
+"description": "Customer logo URL"
+},
+"mainSourceId": {
+"description": "Primary external source ID"
+},
+"ownerId": {
+"description": "Owner user ID"
+},
+"revenue": {
+"description": "Annual customer revenue"
+},
+"size": {
+"description": "Customer employee or seat count"
+},
+"slackChannelId": {
+"description": "Linked Slack channel ID"
+},
+"statusId": {
+"description": "Customer status ID"
+},
+"tierId": {
+"description": "Customer tier ID"
+}
+}
+},
+{
+"name": "linear_updateCustomer",
+"description": "Update a customer",
+"properties": {
+"id": {
+"description": "Customer ID"
+},
+"name": {
+"description": "Customer name"
+},
+"domains": {
+"description": "Customer email domains"
+},
+"externalIds": {
+"description": "External system IDs"
+},
+"logoUrl": {
+"description": "Customer logo URL"
+},
+"mainSourceId": {
+"description": "Primary external source ID"
+},
+"ownerId": {
+"description": "Owner user ID"
+},
+"revenue": {
+"description": "Annual customer revenue"
+},
+"size": {
+"description": "Customer employee or seat count"
+},
+"slackChannelId": {
+"description": "Linked Slack channel ID"
+},
+"statusId": {
+"description": "Customer status ID"
+},
+"tierId": {
+"description": "Customer tier ID"
+}
+}
+},
+{
+"name": "linear_deleteCustomer",
+"description": "Delete a customer",
+"properties": {
+"id": {
+"description": "Customer ID"
+}
+}
+},
+{
+"name": "linear_getCustomerNeeds",
+"description": "Get customer needs from Linear",
+"properties": {
+"limit": {
+"description": "Maximum needs to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived needs"
+},
+"orderBy": {
+"description": "Sort needs by created or updated date"
+},
+"customerId": {
+"description": "Filter by customer ID"
+},
+"issueId": {
+"description": "Filter by issue ID"
+},
+"projectId": {
+"description": "Filter by project ID"
+},
+"priority": {
+"description": "Filter by priority"
+}
+}
+},
+{
+"name": "linear_getCustomerNeedById",
+"description": "Get a customer need by ID",
+"properties": {
+"id": {
+"description": "Customer need ID"
+}
+}
+},
+{
+"name": "linear_createCustomerNeed",
+"description": "Create a customer need linked to an issue or project",
+"properties": {
+"attachmentId": {
+"description": "Issue attachment ID associated with the need"
+},
+"attachmentUrl": {
+"description": "Attachment URL for the need source"
+},
+"body": {
+"description": "Need content in Markdown"
+},
+"commentId": {
+"description": "Comment ID associated with the need"
+},
+"createdAt": {
+"description": "Optional creation timestamp (ISO 8601)"
+},
+"customerExternalId": {
+"description": "External customer ID"
+},
+"customerId": {
+"description": "Linear customer ID"
+},
+"issueId": {
+"description": "Issue ID linked to the need"
+},
+"priority": {
+"description": "Need priority: 0 not important, 1 important"
+},
+"projectId": {
+"description": "Project ID linked to the need"
+}
+}
+},
+{
+"name": "linear_createCustomerNeedFromAttachment",
+"description": "Create or unarchive a customer need from an existing attachment",
+"properties": {
+"attachmentId": {
+"description": "Attachment ID to convert into a need"
+},
+"customerId": {
+"description": "Linear customer ID"
+},
+"customerExternalId": {
+"description": "External customer ID"
+},
+"priority": {
+"description": "Need priority: 0 not important, 1 important"
+}
+}
+},
+{
+"name": "linear_updateCustomerNeed",
+"description": "Update a customer need",
+"properties": {
+"id": {
+"description": "Customer need ID"
+},
+"applyPriorityToRelatedNeeds": {
+"description": "Apply priority changes to related needs on the same issue or project"
+},
+"attachmentUrl": {
+"description": "Updated attachment URL"
+},
+"body": {
+"description": "Updated need content in Markdown"
+},
+"customerExternalId": {
+"description": "External customer ID"
+},
+"customerId": {
+"description": "Linear customer ID"
+},
+"issueId": {
+"description": "Issue ID linked to the need"
+},
+"priority": {
+"description": "Need priority: 0 not important, 1 important"
+},
+"projectId": {
+"description": "Project ID linked to the need"
+}
+}
+},
+{
+"name": "linear_archiveCustomerNeed",
+"description": "Archive a customer need",
+"properties": {
+"id": {
+"description": "Customer need ID"
+}
+}
+},
+{
+"name": "linear_unarchiveCustomerNeed",
+"description": "Restore an archived customer need",
+"properties": {
+"id": {
+"description": "Customer need ID"
+}
+}
+},
+{
+"name": "linear_deleteCustomerNeed",
+"description": "Delete a customer need",
+"properties": {
+"id": {
+"description": "Customer need ID"
+}
+}
+},
+{
+"name": "linear_getCustomerStatuses",
+"description": "Get customer statuses from Linear",
+"properties": {
+"limit": {
+"description": "Maximum statuses to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived statuses"
+},
+"orderBy": {
+"description": "Sort statuses by created or updated date"
+}
+}
+},
+{
+"name": "linear_getCustomerTiers",
+"description": "Get customer tiers from Linear",
+"properties": {
+"limit": {
+"description": "Maximum tiers to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived tiers"
+},
+"orderBy": {
+"description": "Sort tiers by created or updated date"
+}
+}
+},
+{
+"name": "linear_getIssues",
+"description": "Get a list of recent issues from Linear",
+"properties": {
+"limit": {
+"description": "Maximum number of issues to return (default: 10)"
+}
+}
+},
+{
+"name": "linear_getIssueById",
+"description": "Get a specific issue by ID or identifier (e.g., ABC-123)",
+"properties": {
+"id": {
+"description": "The ID or identifier of the issue (e.g., ABC-123)"
+}
+}
+},
+{
+"name": "linear_getCustomFields",
+"description": "Get the custom field definitions available in the authenticated Linear workspace",
+"properties": {}
+},
+{
+"name": "linear_getIssueCustomFields",
+"description": "Get the custom field values that are currently set on a specific issue",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue (e.g., ABC-123)"
+}
+}
+},
+{
+"name": "linear_searchIssues",
+"description": "Search for issues with various filters",
+"properties": {
+"query": {
+"description": "Text to search for in issue title or description"
+},
+"teamId": {
+"description": "Filter issues by team ID"
+},
+"assigneeId": {
+"description": "Filter issues by assignee ID"
+},
+"projectId": {
+"description": "Filter issues by project ID"
+},
+"states": {
+"description": "Filter issues by state name (e.g., 'Todo', 'In Progress', 'Done')"
+},
+"limit": {
+"description": "Maximum number of issues to return (default: 10)"
+}
+}
+},
+{
+"name": "linear_createIssue",
+"description": "Create a new issue in Linear",
+"properties": {
+"title": {
+"description": "Title of the issue"
+},
+"description": {
+"description": "Description of the issue (Markdown supported)"
+},
+"teamId": {
+"description": "ID of the team the issue belongs to"
+},
+"assigneeId": {
+"description": "ID of the user to assign the issue to"
+},
+"priority": {
+"description": "Priority of the issue (0 = No priority, 1 = Urgent, 2 = High, 3 = Normal, 4 = Low)"
+},
+"projectId": {
+"description": "ID of the project the issue belongs to"
+},
+"projectMilestoneId": {
+"description": "ID of the project milestone the issue belongs to"
+},
+"cycleId": {
+"description": "ID of the cycle to add the issue to"
+},
+"estimate": {
+"description": "The estimated complexity/points for the issue"
+},
+"dueDate": {
+"description": "The date at which the issue is due (YYYY-MM-DD format)"
+},
+"labelIds": {
+"description": "IDs of the labels to attach to the issue"
+},
+"parentId": {
+"description": "ID of the parent issue (to create as a sub-task)"
+},
+"subscriberIds": {
+"description": "IDs of the users to subscribe to the issue"
+},
+"stateId": {
+"description": "ID of the workflow state for the issue"
+},
+"templateId": {
+"description": "ID of a template to use for creating the issue"
+},
+"sortOrder": {
+"description": "The position of the issue in relation to other issues"
+}
+}
+},
+{
+"name": "linear_updateIssue",
+"description": "Update an existing issue in Linear",
+"properties": {
+"id": {
+"description": "ID or identifier of the issue to update (e.g., ABC-123)"
+},
+"title": {
+"description": "New title for the issue"
+},
+"description": {
+"description": "New description for the issue (Markdown supported)"
+},
+"stateId": {
+"description": "ID of the new state for the issue"
+},
+"priority": {
+"description": "New priority for the issue (0 = No priority, 1 = Urgent, 2 = High, 3 = Normal, 4 = Low)"
+},
+"projectId": {
+"description": "ID of the project to move the issue to"
+},
+"projectMilestoneId": {
+"description": "ID of the project milestone to assign to the issue"
+},
+"assigneeId": {
+"description": "ID of the user to assign the issue to, or null to unassign"
+},
+"cycleId": {
+"description": "ID of the cycle to move the issue to, or null to remove from current cycle"
+},
+"estimate": {
+"description": "The estimated complexity/points for the issue"
+},
+"dueDate": {
+"description": "The new due date for the issue (YYYY-MM-DD format), or null to remove"
+},
+"labelIds": {
+"description": "IDs of the labels to set on the issue (replacing existing labels)"
+},
+"addedLabelIds": {
+"description": "IDs of labels to add to the issue (without removing existing ones)"
+},
+"removedLabelIds": {
+"description": "IDs of labels to remove from the issue"
+},
+"parentId": {
+"description": "ID of the parent issue, or null to convert to a regular issue"
+},
+"subscriberIds": {
+"description": "IDs of the users to subscribe to the issue (replacing existing subscribers)"
+},
+"teamId": {
+"description": "ID of the team to move the issue to"
+},
+"sortOrder": {
+"description": "The position of the issue in relation to other issues"
+}
+}
+},
+{
+"name": "linear_updateIssueCustomField",
+"description": "Set or clear a custom field value on an issue. Pass null as value to clear it.",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue whose custom field should be updated"
+},
+"customFieldId": {
+"description": "ID of the custom field definition to update"
+},
+"value": {
+"description": "JSON-compatible value to write. Use null to clear the field. Arrays and objects are passed through as-is when the Linear schema accepts them."
+}
+}
+},
+{
+"name": "linear_createComment",
+"description": "Add a comment to an issue, project, initiative, update, document content, or as a threaded reply",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to comment on (e.g., ABC-123)"
+},
+"projectId": {
+"description": "ID of the project to comment on"
+},
+"initiativeId": {
+"description": "ID of the initiative to comment on"
+},
+"projectUpdateId": {
+"description": "ID of the project update to comment on"
+},
+"initiativeUpdateId": {
+"description": "ID of the initiative update to comment on"
+},
+"documentContentId": {
+"description": "ID of the document content to anchor an inline comment to"
+},
+"postId": {
+"description": "ID of the post to comment on"
+},
+"body": {
+"description": "Text of the comment (Markdown supported)"
+},
+"parentId": {
+"description": "ID of the parent comment to reply to (for threaded comments)"
+},
+"quotedText": {
+"description": "Optional quoted text for inline comments"
+},
+"subscriberIds": {
+"description": "Optional user IDs to subscribe to the comment target"
+}
+}
+},
+{
+"name": "linear_updateComment",
+"description": "Update an existing comment",
+"properties": {
+"id": {
+"description": "ID of the comment to update"
+},
+"body": {
+"description": "Updated comment body"
+},
+"quotedText": {
+"description": "Optional quoted text for inline comments"
+},
+"resolvingCommentId": {
+"description": "Optional resolving comment ID"
+},
+"resolvingUserId": {
+"description": "Optional resolving user ID"
+},
+"subscriberIds": {
+"description": "Optional subscriber IDs"
+},
+"doNotSubscribeToIssue": {
+"description": "Prevent auto subscription on update"
+}
+}
+},
+{
+"name": "linear_deleteComment",
+"description": "Delete a comment",
+"properties": {
+"id": {
+"description": "ID of the comment to delete"
+}
+}
+},
+{
+"name": "linear_addIssueLabel",
+"description": "Add a label to an issue in Linear",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to add the label to (e.g., ABC-123)"
+},
+"labelId": {
+"description": "ID of the label to add to the issue"
+}
+}
+},
+{
+"name": "linear_removeIssueLabel",
+"description": "Remove a label from an issue in Linear",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to remove the label from (e.g., ABC-123)"
+},
+"labelId": {
+"description": "ID of the label to remove from the issue"
+}
+}
+},
+{
+"name": "linear_getIssueTemplates",
+"description": "Get a list of issue templates",
+"properties": {
+"limit": {
+"description": "Maximum number of templates to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived templates"
+},
+"orderBy": {
+"description": "Sort templates by created or updated date"
+}
+}
+},
+{
+"name": "linear_getIssueTemplateById",
+"description": "Get details of a specific issue template",
+"properties": {
+"id": {
+"description": "ID of the template to retrieve"
+}
+}
+},
+{
+"name": "linear_createIssueTemplate",
+"description": "Create a new issue template",
+"properties": {
+"name": {
+"description": "Template name"
+},
+"description": {
+"description": "Optional template description"
+},
+"teamId": {
+"description": "Optional team ID"
+},
+"templateData": {
+"description": "Template issue payload as JSON"
+},
+"sortOrder": {
+"description": "Optional sort order"
+}
+}
+},
+{
+"name": "linear_updateIssueTemplate",
+"description": "Update an existing issue template. Provide id plus at least one other field to change.",
+"properties": {
+"id": {
+"description": "ID of the template to update"
+},
+"name": {
+"description": ""
+},
+"description": {
+"description": ""
+},
+"teamId": {
+"description": ""
+},
+"templateData": {
+"description": ""
+},
+"sortOrder": {
+"description": ""
+}
+}
+},
+{
+"name": "linear_createIssueFromTemplate",
+"description": "Create a new issue from a template",
+"properties": {
+"teamId": {
+"description": "ID of the team where the issue will be created"
+},
+"templateId": {
+"description": "ID of the issue template to apply"
+},
+"title": {
+"description": "Optional title override"
+},
+"description": {
+"description": "Optional description override"
+},
+"priority": {
+"description": "Optional priority override"
+},
+"projectId": {
+"description": "Optional project override"
+},
+"projectMilestoneId": {
+"description": "Optional project milestone override"
+},
+"cycleId": {
+"description": "Optional cycle override"
+}
+}
+},
+{
+"name": "linear_getTeamTemplates",
+"description": "Get templates for a specific team",
+"properties": {
+"teamId": {
+"description": "ID of the team to inspect"
+},
+"limit": {
+"description": "Maximum number of templates to return (default: 25)"
+},
+"includeArchived": {
+"description": "Include archived templates"
+},
+"orderBy": {
+"description": "Sort templates by created or updated date"
+}
+}
+},
+{
+"name": "linear_archiveTemplate",
+"description": "Archive an issue template",
+"properties": {
+"id": {
+"description": "ID of the template to archive"
+}
+}
+},
+{
+"name": "linear_assignIssue",
+"description": "Assign an issue to a user",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to assign (e.g., ABC-123)"
+},
+"assigneeId": {
+"description": "ID of the user to assign the issue to, or null to unassign"
+}
+}
+},
+{
+"name": "linear_subscribeToIssue",
+"description": "Subscribe to issue updates",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to subscribe to (e.g., ABC-123)"
+}
+}
+},
+{
+"name": "linear_convertIssueToSubtask",
+"description": "Convert an issue to a subtask",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to convert (e.g., ABC-123)"
+},
+"parentIssueId": {
+"description": "ID or identifier of the parent issue (e.g., ABC-456)"
+}
+}
+},
+{
+"name": "linear_createIssueRelation",
+"description": "Create relations between issues (blocks, is blocked by, etc.)",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the first issue (e.g., ABC-123)"
+},
+"relatedIssueId": {
+"description": "ID or identifier of the second issue (e.g., ABC-456)"
+},
+"type": {
+"description": "Type of relation: 'blocks', 'blocked_by', 'related', 'duplicate', 'duplicate_of'"
+}
+}
+},
+{
+"name": "linear_deleteIssueRelation",
+"description": "Delete an issue relation by ID",
+"properties": {
+"id": {
+"description": "ID of the issue relation to delete"
+}
+}
+},
+{
+"name": "linear_archiveIssue",
+"description": "Archive an issue",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to archive (e.g., ABC-123)"
+}
+}
+},
+{
+"name": "linear_setIssuePriority",
+"description": "Set the priority of an issue",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue (e.g., ABC-123)"
+},
+"priority": {
+"description": "Priority level (0 = No priority, 1 = Urgent, 2 = High, 3 = Normal, 4 = Low)"
+}
+}
+},
+{
+"name": "linear_transferIssue",
+"description": "Transfer an issue to another team",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to transfer (e.g., ABC-123)"
+},
+"teamId": {
+"description": "ID of the team to transfer the issue to"
+}
+}
+},
+{
+"name": "linear_duplicateIssue",
+"description": "Duplicate an issue",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to duplicate (e.g., ABC-123)"
+}
+}
+},
+{
+"name": "linear_getIssueHistory",
+"description": "Get the history of changes made to an issue",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue (e.g., ABC-123)"
+},
+"limit": {
+"description": "Maximum number of history events to return (default: 10)"
+}
+}
+},
+{
+"name": "linear_getComments",
+"description": "Get comments for an issue, project, initiative, update, or document content",
+"properties": {
+"issueId": {
+"description": "ID or identifier of the issue to get comments from (e.g., ABC-123)"
+},
+"projectId": {
+"description": "ID of the project to get comments from"
+},
+"initiativeId": {
+"description": "ID of the initiative to get comments from"
+},
+"projectUpdateId": {
+"description": "ID of the project update to get comments from"
+},
+"initiativeUpdateId": {
+"description": "ID of the initiative update to get comments from"
+},
+"documentContentId": {
+"description": "ID of the document content to get inline comments from"
+},
+"postId": {
+"description": "ID of the post to get comments from"
+},
+"limit": {
+"description": "Maximum number of comments to return (default: 25)"
+},
+"cursor": {
+"description": "Pagination cursor returned by Linear"
+},
+"orderBy": {
+"description": "Sort comments by created or updated date"
+}
+}
+}
+]
