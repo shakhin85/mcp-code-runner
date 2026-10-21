@@ -39,7 +39,7 @@ def test_name_detail_lists_refs_only():
 
 
 def test_desc_detail_adds_first_description_line():
-    out = _search_tools_logic("s", TOOLS, PY_NAMES, detail="desc")  # матчит оба тула
+    out = _search_tools_logic("sql schemas", TOOLS, PY_NAMES, detail="desc")  # матчит оба тула
     assert "postgres_lime.execute_sql — Run a SQL query." in out
     assert "Second line" not in out
     assert "sql (str)" not in out

@@ -10,7 +10,9 @@ Exposes three tools to Claude:
 import asyncio
 import json
 import logging
+import math
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -178,6 +180,50 @@ def _overview_logic(
 
 
 SEARCH_DETAILS = ("name", "desc", "full")
+SEARCH_LIMIT = 10
+_BM25_K1, _BM25_B = 1.2, 0.75
+
+
+def _tokens(text: str) -> list[str]:
+    """Lowercase word tokens; camelCase and snake_case names split into words."""
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    return re.findall(r"[^\W_]+", text.lower())
+
+
+def _tool_doc(tool: Tool) -> list[str]:
+    """Searchable tokens of a tool. The name counts twice: a name hit outranks prose."""
+    props = (tool.inputSchema or {}).get("properties") or {}
+    params = " ".join(
+        f"{key} {spec.get('description', '')}"
+        for key, spec in props.items()
+        if isinstance(spec, dict)
+    )
+    name = _tokens(tool.name)
+    return name + name + _tokens(f"{tool.description or ''} {params}")
+
+
+def _term_hits(term: str, doc: list[str]) -> int:
+    """Occurrences of term in doc; a term of 3+ chars also matches as a prefix."""
+    return sum(1 for tok in doc if tok == term or (len(term) >= 3 and tok.startswith(term)))
+
+
+def _bm25_scores(terms: list[str], docs: list[list[str]]) -> list[float]:
+    """Okapi BM25 of each doc against terms. rank-bm25 would pull numpy for this formula."""
+    if not docs:
+        return []
+    avgdl = sum(map(len, docs)) / len(docs) or 1.0
+    scores = [0.0] * len(docs)
+    for term in set(terms):
+        hits = [_term_hits(term, doc) for doc in docs]
+        df = sum(1 for tf in hits if tf)
+        if not df:
+            continue
+        idf = math.log(1 + (len(docs) - df + 0.5) / (df + 0.5))
+        for i, tf in enumerate(hits):
+            if tf:
+                norm = 1 - _BM25_B + _BM25_B * len(docs[i]) / avgdl
+                scores[i] += idf * tf * (_BM25_K1 + 1) / (tf + _BM25_K1 * norm)
+    return scores
 
 
 def _render_matches(py_name: str, tools: list[Tool], detail: str) -> str:
@@ -208,23 +254,28 @@ def _search_tools_logic(
     if not query.strip():
         return _overview_logic(tools_by_server, py_name_map)
 
-    keywords = query.lower().split()
-    matches: dict[str, list[Tool]] = {}
+    entries = [(server, tool) for server, tools in tools_by_server.items() for tool in tools]
+    scores = _bm25_scores(_tokens(query), [_tool_doc(tool) for _, tool in entries])
+    ranked = sorted(
+        ((s, e) for s, e in zip(scores, entries, strict=True) if s > 0),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
 
-    for server_name, tools in tools_by_server.items():
-        for tool in tools:
-            searchable = f"{tool.name} {tool.description or ''}".lower()
-            if all(kw in searchable for kw in keywords):
-                matches.setdefault(server_name, []).append(tool)
-
-    if not matches:
+    if not ranked:
         server_names = sorted(py_name_map.keys())
         return f"No tools found for '{query}'. Available servers: {', '.join(server_names)}"
+
+    matches: dict[str, list[Tool]] = {}
+    for _, (server_name, tool) in ranked[:SEARCH_LIMIT]:
+        matches.setdefault(server_name, []).append(tool)
 
     sections = []
     for server_name, tools in matches.items():
         py_name = server_name_to_py(server_name)
         sections.append(_render_matches(py_name, tools, detail))
+    if len(ranked) > SEARCH_LIMIT:
+        sections.append(f"# showing {SEARCH_LIMIT} of {len(ranked)} matches — narrow the query")
 
     return "\n\n".join(sections)
 
@@ -301,8 +352,9 @@ async def search_tools(
     Search for MCP tools by keyword. Returns Python stubs for matching tools.
 
     Args:
-        query: Space-separated keywords. All keywords must match tool name or description.
-               Examples: "sql query", "read file", "documentation"
+        query: Space-separated keywords, ranked by BM25 over tool name, description and
+               parameters. Any keyword may match; best matches first, top 10.
+               Examples: "sql query", "read file", "create issue ticket"
         detail: "name" — only `server.tool` refs; "desc" — refs plus the first
                description line; "full" (default) — full stubs with arguments.
                Broad query → start with "name", then "full" on the narrowed one.
