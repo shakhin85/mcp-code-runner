@@ -12,6 +12,7 @@ executor and the namespace proxy is handled in Task 5.
 from __future__ import annotations
 
 import builtins as _builtins
+import contextvars
 import functools
 import inspect
 import re
@@ -149,7 +150,7 @@ class SkillProxy:
         self._callables = callables
         # What user code gets: wrapped once, so `skills.x.f is skills.x.f`.
         self._calls = (
-            {k: _with_outcome(v, skill_dir) for k, v in callables.items()}
+            {k: _with_outcome(v, skill_dir, name) for k, v in callables.items()}
             if skill_dir is not None else callables
         )
 
@@ -170,7 +171,14 @@ class SkillProxy:
         return f"<SkillProxy {self._name} fns=[{fns}]>"
 
 
-def _with_outcome(fn: Any, skill_dir: Path) -> Any:
+# Name of the skill whose callable is running now. The side-effect gate reads
+# it so a refused call from inside skill X doesn't advise "use skills.X" (SHA-465).
+active_skill: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "active_skill", default=None
+)
+
+
+def _with_outcome(fn: Any, skill_dir: Path, name: str) -> Any:
     """Wrap a skill callable so each call's outcome lands in status.json.
 
     Success = no exception (async: after the await). Exceptions from the skill
@@ -181,21 +189,27 @@ def _with_outcome(fn: Any, skill_dir: Path) -> Any:
     is_async = inspect.iscoroutinefunction(fn)
 
     async def settle(coro: Any) -> Any:
+        token = active_skill.set(name)
         try:
             result = await coro
         except Exception:
             record_outcome(skill_dir, ok=False)
             raise
+        finally:
+            active_skill.reset(token)
         record_outcome(skill_dir, ok=True)
         return result
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        token = active_skill.set(name)
         try:
             result = fn(*args, **kwargs)
         except Exception:
             record_outcome(skill_dir, ok=False)
             raise
+        finally:
+            active_skill.reset(token)
         if is_async:
             return settle(result)
         record_outcome(skill_dir, ok=True)

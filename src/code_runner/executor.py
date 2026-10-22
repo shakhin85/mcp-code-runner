@@ -43,7 +43,7 @@ from mcp.types import Tool
 from . import prelude as _prelude
 from .config_reader import server_name_to_py
 from .metrics import MetricsRecorder, classify_error, code_fingerprint
-from .skills import SkillsNamespace
+from .skills import SkillsNamespace, active_skill
 from .sql_limit import inject_limit
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
@@ -1085,6 +1085,8 @@ class _ToolNamespace:
                 and f"{server}.*" not in allowed
             ):
                 skill = replacements.get(f"{server}.{gated}")
+                if skill and skill.split(".")[1] == active_skill.get():
+                    skill = None  # the call comes from that very skill
                 hint = f"используй {skill}(...) вместо сырого вызова\n" if skill else ""
                 raise PermissionError(
                     f"{hint}{server}.{gated} is side-effecting; pass "
@@ -1498,7 +1500,8 @@ class CodeExecutor:
                     }
                 tag, body = msg
                 if tag == "call":
-                    req_id, py_server, tool_attr, kwargs = body
+                    req_id, py_server, tool_attr, kwargs, skill_name = body
+                    token = active_skill.set(skill_name)
                     try:
                         wrapper = getattr(proxies[py_server], tool_attr)
                         value = await wrapper(**kwargs)
@@ -1508,6 +1511,8 @@ class CodeExecutor:
                     # ошибка уходила в child, и таймаут execute_code не срабатывал.
                     except Exception as e:
                         parent_conn.send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
+                    finally:
+                        active_skill.reset(token)
                 elif tag == "done":
                     return body
 

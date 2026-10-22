@@ -155,3 +155,26 @@ def test_replaces_without_fn_names_skill_not_a_guessed_function(isolation, tmp_p
     result, _ = _run(isolation, "await srv.create_thing(a=1)", skills)
     assert "skills.thing_skill" in result["error"], result["error"]
     assert "skills.thing_skill.thing" not in result["error"], result["error"]
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_gate_error_from_inside_replacing_skill_has_no_skill_hint(isolation, tmp_path):
+    # SHA-465: the skill itself makes the raw call — advising it to use itself is noise.
+    d = tmp_path / "thing_skill"
+    d.mkdir()
+    (d / "script.py").write_text(
+        "async def thing(srv):\n    return await srv.create_thing(a=1)\n",
+        encoding="utf-8",
+    )
+    (d / "SKILL.md").write_text(
+        "---\nname: thing_skill\ndescription: d\n"
+        "replaces: [srv.create_thing:thing]\n---\n",
+        encoding="utf-8",
+    )
+    skills = SkillsNamespace(SkillLoader(tmp_path).discover())
+    result, session = _run(isolation, "await skills.thing_skill.thing(srv)", skills)
+    err = result["error"]
+    assert "PermissionError" in err, err
+    assert "используй" not in err, err
+    assert 'allow_side_effects=["srv.create_thing"]' in err, err
+    assert session.calls == []
