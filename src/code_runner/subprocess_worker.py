@@ -45,7 +45,7 @@ from .executor import (
     _name_error_hint,
     _signature_hint,
 )
-from .skills import SkillLoader, SkillsNamespace
+from .skills import SkillLoader, SkillsNamespace, active_skill
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
 # Env vars the child keeps; everything else (API keys, tokens, connection
@@ -150,7 +150,8 @@ class _RpcBridge:
         async with self._lock:
             self._counter += 1
             req_id = self._counter
-            self._conn.send(("call", (req_id, py_server, tool_attr, kwargs)))
+            # active_skill rides along: the gate runs parent-side (SHA-465).
+            self._conn.send(("call", (req_id, py_server, tool_attr, kwargs, active_skill.get())))
             _tag, body = await loop.run_in_executor(None, self._conn.recv)
         # tag is always "resp" here; the parent never interleaves other tags
         # while a call is outstanding.
