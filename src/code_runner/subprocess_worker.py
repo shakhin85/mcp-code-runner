@@ -47,6 +47,7 @@ from .executor import (
     _signature_hint,
     make_safe_builtins,
 )
+from .restore import make_restore
 from .skills import SkillLoader, SkillsNamespace, active_skill
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
@@ -194,6 +195,7 @@ def _build_child_namespace(payload: dict, rpc: _RpcBridge) -> tuple[dict, set[st
         def _denied(*_a, **_kw):
             raise WorkspaceError("open() requires session_id")
         namespace["open"] = _denied
+    namespace["restore"] = make_restore(namespace["open"])
 
     for spec in payload.get("servers", []):
         namespace[spec["py_name"]] = _RemoteProxy(spec["py_name"], spec["tools"], rpc)

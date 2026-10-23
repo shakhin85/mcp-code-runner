@@ -425,6 +425,9 @@ async def execute_code(
         timeout: Maximum execution time in seconds (default 60).
         max_output_bytes: Max size of returned output in bytes (default 20000,
             ≈5K tokens). Output over this limit is truncated with a footer.
+            With session_id the full output is kept and the footer names its
+            block id: the next call takes `restore(id, start, end)` (lines) or
+            `restore(id, grep='re', context=2)` without re-running the tools.
             Pass 0 to disable. Raise when you explicitly need a larger sample;
             prefer SQL LIMIT/TOP or pagination over bumping this.
         session_id: Optional string id. When two calls share the same id,

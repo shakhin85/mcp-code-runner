@@ -19,6 +19,7 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
   `summarize_skills` behind `get_metrics(skills=True)`: calls, error %, last call per
   function and trim candidates (unused / failing, thresholds `SKILL_TRIM_*`, SHA-484).
 - `workspace.py` — injected `open()`: writes confined to `~/.cache/code-runner/workspace/<session_id>/` (relative paths), reads may also reach absolute paths under `CODE_RUNNER_READ_ROOTS` minus a secret deny-list. Text modes default to UTF-8.
+- `restore.py` — injected `restore(id, ...)`: lines or grep of a truncated block's full output (`out_<id>.txt`), built on the sandbox `open()`.
 - `skills.py` — discovers `~/.claude/code-runner-skills/<name>/`, exposes `skills.<name>.<fn>` proxy.
 
 ## Deployment
@@ -60,7 +61,9 @@ A third line, `[cr] ⚠ check before trusting the result: …`, names quiet fail
 results that parse fine but may be wrong: 0 rows, a saturated auto-LIMIT, a RAW-CAP
 string, rows where every value is None. With `session_id` set, output over
 `max_output_bytes` is also written in full to `out_<block>.txt` in the workspace, and
-the truncation footer names that file instead of advising a re-run.
+the truncation footer names the block id instead of advising a re-run. The next block
+calls `restore(id, start, end)` for lines or `restore(id, grep='re', context=2)` for
+matches (`restore.py`, SHA-482) — no downstream call is repeated.
 
 ## Dev
 
