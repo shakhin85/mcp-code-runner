@@ -206,20 +206,25 @@ def _with_outcome(
     """
     is_async = inspect.iscoroutinefunction(fn)
 
-    def outcome(ok: bool, start: float) -> None:
+    def outcome(ok: bool, start: float, exc: BaseException | None = None) -> None:
         if call_log is not None:
-            call_log.append({
+            event: dict[str, Any] = {
                 "skill": name, "fn": fn_name, "success": ok,
                 "duration_ms": round((time.monotonic() - start) * 1000, 2),
-            })
+            }
+            if exc is not None:
+                # Class name only: the message may hold a secret or untrusted text
+                # and the repo has no redaction helper to scrub it.
+                event["error"] = type(exc).__name__
+            call_log.append(event)
         record_outcome(skill_dir, ok=ok)
 
     async def settle(coro: Any, start: float) -> Any:
         token = active_skill.set(name)
         try:
             result = await coro
-        except Exception:
-            outcome(False, start)
+        except Exception as e:
+            outcome(False, start, e)
             raise
         finally:
             active_skill.reset(token)
@@ -232,8 +237,8 @@ def _with_outcome(
         token = active_skill.set(name)
         try:
             result = fn(*args, **kwargs)
-        except Exception:
-            outcome(False, start)
+        except Exception as e:
+            outcome(False, start, e)
             raise
         finally:
             active_skill.reset(token)

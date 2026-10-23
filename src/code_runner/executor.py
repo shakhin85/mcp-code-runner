@@ -1372,7 +1372,10 @@ class _ToolNamespace:
             ):
                 skill = replacements.get(f"{server}.{gated}")
                 if skill and skill.split(".")[1] == active_skill.get():
-                    skill = None  # the call comes from that very skill
+                    raise PermissionError(
+                        f"skills.{active_skill.get()} вызывает {server}.{gated}: "
+                        f'передай allow_side_effects=["{server}.{gated}"] в execute_code'
+                    )
                 hint = f"используй {skill}(...) вместо сырого вызова\n" if skill else ""
                 raise PermissionError(
                     f"{hint}{server}.{gated} is side-effecting; pass "
