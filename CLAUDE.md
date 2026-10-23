@@ -7,7 +7,7 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
 - `server.py` — FastMCP entry point. Tools: `list_available_tools`, `search_tools`, `execute_code`, `get_metrics`, `save_skill`.
 - `executor.py` — `CodeExecutor`: validates code, builds namespace, runs with top-level-await, persists user vars per `session_id`.
 - `client_pool.py` — `MCPClientPool`: long-lived stdio/HTTP MCP client connections.
-- `config_reader.py` — reads `~/.claude.json`, project `.claude/settings.json`, project `.mcp.json`. Detects project dir via `CLAUDE_PROJECT_DIR` or `/proc` walk.
+- `config_reader.py` — reads global `~/.claude/.config.json` (falls back to `~/.claude.json` when absent — same file Claude Code reads), project `.claude/settings.json`, project `.mcp.json`. Detects project dir via `CLAUDE_PROJECT_DIR` or `/proc` walk.
 - `schema_gen.py` — JSON-schema → Python stub strings for `search_tools`.
 - `sql_limit.py` — sqlglot-based auto-LIMIT/TOP injection for bare SELECTs.
 - `metrics.py` — JSONL recorder for `tool_call` and `execute_code` events, plus
