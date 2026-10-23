@@ -259,9 +259,18 @@ def _extract_picklable_vars(
 
 
 async def _run(payload: dict, rpc: _RpcBridge) -> dict:
-    code = payload["code"]
     namespace, framework_names, output_lines = _build_child_namespace(payload, rpc)
+    result = await _exec_user_code(payload["code"], namespace, framework_names, output_lines)
+    # Skills run here, but metrics are recorded parent-side (SHA-484).
+    skills = namespace.get("skills")
+    if isinstance(skills, SkillsNamespace):
+        result["skill_calls"] = skills.drain_calls()
+    return result
 
+
+async def _exec_user_code(
+    code: str, namespace: dict, framework_names: set[str], output_lines: list[str]
+) -> dict:
     try:
         compiled = compile(code, "<user>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
     except SyntaxError as e:

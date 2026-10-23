@@ -1443,7 +1443,7 @@ class CodeExecutor:
         stats: dict[str, int],
         call_timeout: float,
         allow_side_effects: list[str] | None = None,
-    ) -> tuple[bool, str, str | None]:
+    ) -> tuple[bool, str, str | None, list[dict[str, Any]]]:
         """Run user code in a fresh rlimited child; proxy its MCP calls back here.
 
         The child holds no live sessions, so each tool call it makes is sent over
@@ -1556,7 +1556,10 @@ class CodeExecutor:
         error = result.get("error")
         if error:
             error += _str_result_hint(error, stats)
-        return bool(result.get("success")), result.get("output") or "", error
+        return (
+            bool(result.get("success")), result.get("output") or "", error,
+            result.get("skill_calls") or [],
+        )
 
     async def execute(
         self,
@@ -1609,7 +1612,12 @@ class CodeExecutor:
             state.blocks += 1
             block_no = state.blocks
 
-        def finalize(success: bool, output: str, error: str | None) -> dict[str, Any]:
+        def finalize(
+            success: bool,
+            output: str,
+            error: str | None,
+            child_skill_calls: list[dict[str, Any]] | None = None,
+        ) -> dict[str, Any]:
             if state is not None and not success and error:
                 line = _error_line(error)
                 error += _failed_block_hint(error, state.failed_block)
@@ -1660,6 +1668,16 @@ class CodeExecutor:
                     })
                 except Exception:
                     pass
+            # SHA-484: per-function skill usage for the trim report. In-process
+            # calls sit in the namespace log; a child's come back with its result.
+            drain = getattr(self.skills, "drain_calls", None)
+            skill_calls = (drain() if drain else []) + (child_skill_calls or [])
+            if self.recorder is not None:
+                for call in skill_calls:
+                    with contextlib.suppress(Exception):
+                        self.recorder.record(
+                            {"kind": "skill_call", **call, "session_id": session_id}
+                        )
             return result
 
         # Pipeline: 1. validate → 2. transform → 3. wrap → 4. exec
@@ -1675,7 +1693,7 @@ class CodeExecutor:
         # the broker's proxy calls — are shared with the in-process path below.
         if self._isolation == "subprocess" and _SUBPROCESS_AVAILABLE:
             try:
-                success, output, error = await self._run_in_subprocess(
+                success, output, error, child_calls = await self._run_in_subprocess(
                     code, session_id, timeout, auto_limit, raw_cap, stats, per_call_timeout,
                     allow_side_effects,
                 )
@@ -1684,7 +1702,7 @@ class CodeExecutor:
                     False, "",
                     f"isolation error: {type(e).__name__}: {e}\n{traceback.format_exc()}",
                 )
-            return finalize(success, output, error)
+            return finalize(success, output, error, child_calls)
 
         namespace, framework_names = self._build_namespace(
             session_id, auto_limit, stats, raw_cap, per_call_timeout, allow_side_effects

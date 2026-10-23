@@ -104,6 +104,64 @@ def summarize_errors(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+# Trim-report thresholds (SHA-484; TroVE, arXiv 2401.12869: grow + trim).
+# A skill function is a removal candidate when it had no calls in the window,
+# or failed in at least SKILL_TRIM_ERROR_SHARE of at least SKILL_TRIM_MIN_CALLS
+# calls — fewer calls than that say nothing about the error share.
+SKILL_TRIM_WINDOW_DAYS = 30
+SKILL_TRIM_MIN_CALLS = 5
+SKILL_TRIM_ERROR_SHARE = 0.3
+
+
+def summarize_skills(
+    events: list[dict[str, Any]], installed: dict[str, list[str]]
+) -> dict[str, Any]:
+    """Per `skills.<name>.<fn>` usage from skill_call events, with trim candidates.
+
+    `installed` maps skill name → its public functions, so a function never
+    called in the window still gets a row (calls=0, candidate "unused").
+    Called functions of a skill no longer installed keep their rows too.
+    Removal itself is a human decision; this only names the candidates.
+    """
+    calls = [e for e in events if e.get("kind") == "skill_call"]
+    rows: dict[tuple[str, str], dict[str, Any]] = {
+        (skill, fn): {"skill": skill, "fn": fn, "calls": 0, "errors": 0, "last_call": None}
+        for skill, fns in installed.items()
+        for fn in fns
+    }
+    for ev in calls:
+        key = (ev.get("skill"), ev.get("fn"))
+        row = rows.setdefault(
+            key, {"skill": key[0], "fn": key[1], "calls": 0, "errors": 0, "last_call": None}
+        )
+        row["calls"] += 1
+        row["errors"] += ev.get("success") is False
+        row["last_call"] = max(row["last_call"] or "", ev.get("ts") or "") or None
+    out = []
+    for row in rows.values():
+        share = row["errors"] / row["calls"] if row["calls"] else 0.0
+        if row["calls"] == 0:
+            candidate = "unused"
+        elif row["calls"] >= SKILL_TRIM_MIN_CALLS and share >= SKILL_TRIM_ERROR_SHARE:
+            candidate = "failing"
+        else:
+            candidate = None
+        out.append({**row, "error_pct": round(share * 100, 1), "candidate": candidate})
+    out.sort(key=lambda r: (r["candidate"] is None, -r["calls"], r["skill"], r["fn"]))
+    return {
+        "thresholds": {
+            "window_days": SKILL_TRIM_WINDOW_DAYS,
+            "min_calls": SKILL_TRIM_MIN_CALLS,
+            "error_share": SKILL_TRIM_ERROR_SHARE,
+        },
+        # Rotation can keep less history than the window: this is what the
+        # numbers actually cover.
+        "covered_from": calls[0].get("ts") if calls else None,
+        "candidates": sum(r["candidate"] is not None for r in out),
+        "rows": out,
+    }
+
+
 def code_fingerprint(code: str) -> str:
     """Whitespace-normalized sha256[:16] of a code snippet.
 

@@ -16,6 +16,7 @@ import os
 import re
 import sys
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import unquote, urlparse
@@ -28,7 +29,12 @@ from .client_pool import MCPClientPool
 from .config_reader import load_server_configs, server_name_to_py
 from .executor import CodeExecutor
 from .late_response import drop_cancelled_responses
-from .metrics import recorder_from_env, summarize_errors
+from .metrics import (
+    SKILL_TRIM_WINDOW_DAYS,
+    recorder_from_env,
+    summarize_errors,
+    summarize_skills,
+)
 from .project_pools import STARTUP_TIMEOUT, ProjectPoolRegistry, _PoolHost
 from .schema_gen import generate_server_overview, generate_stubs_for_server
 from .skills import SkillLoader, SkillsNamespace, SkillSpec, write_skill_files
@@ -484,16 +490,19 @@ async def get_metrics(
     kind: str | None = None,
     limit: int = 100,
     summary: bool = False,
+    skills: bool = False,
 ) -> str:
     """
     Return recent code-runner metrics events as a JSON list (most recent last).
 
-    Two event kinds are recorded:
+    Three event kinds are recorded:
       - "tool_call": one per MCP tool invocation (server, tool, duration_ms,
         bytes, success, limit_applied, error).
       - "execute_code": one per execute_code call — a rollup with total
         duration, output_bytes_raw/sent, truncated flag, tool_calls count,
         auto_limit_hits count, session_id.
+      - "skill_call": one per `skills.<name>.<fn>` call (skill, fn, success,
+        duration_ms, session_id).
 
     Args:
         since: ISO-8601 timestamp (e.g. "2026-04-17T10:00:00Z"); only events
@@ -508,6 +517,11 @@ async def get_metrics(
             aggregate is what comes back, not the events. A rising
             syntax_share means calls are being routed into the sandbox that
             were small enough to be direct tool calls.
+        skills: Return the skill trim report instead: one row per
+            `skills.<name>.<fn>` — calls, error_pct, last_call, candidate
+            ("unused" / "failing" / null) — over the last 30 days (or `since`),
+            plus the thresholds used. Ignores server/kind/limit. Candidates are
+            for review; deleting a skill is a human decision.
 
     Returns JSON string. Empty list if no events match or metrics are disabled.
     """
@@ -515,6 +529,17 @@ async def get_metrics(
     if executor.recorder is None:
         return json.dumps(
             {"error": "metrics disabled — set CODE_RUNNER_METRICS=1 and restart"}
+        )
+    if skills:
+        window_start = datetime.now(UTC) - timedelta(days=SKILL_TRIM_WINDOW_DAYS)
+        events = executor.recorder.read(
+            since=since or window_start.strftime("%Y-%m-%dT%H:%M:%S"),
+            kind="skill_call",
+            limit=sys.maxsize,
+        )
+        installed = executor.skills.catalog() if executor.skills is not None else {}
+        return json.dumps(
+            summarize_skills(events, installed), ensure_ascii=False, default=str, indent=2
         )
     events = executor.recorder.read(
         since=since, server=server, kind=kind, limit=limit

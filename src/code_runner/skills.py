@@ -16,6 +16,7 @@ import contextvars
 import functools
 import inspect
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -143,14 +144,21 @@ class SkillProxy:
     __slots__ = ("_name", "_callables", "_calls")
 
     def __init__(
-        self, name: str, callables: dict[str, Any], skill_dir: Path | None = None
+        self,
+        name: str,
+        callables: dict[str, Any],
+        skill_dir: Path | None = None,
+        call_log: list[dict[str, Any]] | None = None,
     ) -> None:
         self._name = name
         # Raw functions: find_callables reads their real signatures.
         self._callables = callables
         # What user code gets: wrapped once, so `skills.x.f is skills.x.f`.
         self._calls = (
-            {k: _with_outcome(v, skill_dir, name) for k, v in callables.items()}
+            {
+                k: _with_outcome(v, skill_dir, name, k, call_log)
+                for k, v in callables.items()
+            }
             if skill_dir is not None else callables
         )
 
@@ -178,8 +186,18 @@ active_skill: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
-def _with_outcome(fn: Any, skill_dir: Path, name: str) -> Any:
+def _with_outcome(
+    fn: Any,
+    skill_dir: Path,
+    name: str,
+    fn_name: str,
+    call_log: list[dict[str, Any]] | None = None,
+) -> Any:
     """Wrap a skill callable so each call's outcome lands in status.json.
+
+    The same outcome is appended to `call_log` (SHA-484): status.json keeps
+    lifetime counters per skill, the log feeds per-function `skill_call`
+    metrics events, from which the trim report reads usage over a window.
 
     Success = no exception (async: after the await). Exceptions from the skill
     and from recording both propagate. An async `fn` is called eagerly and only
@@ -188,31 +206,40 @@ def _with_outcome(fn: Any, skill_dir: Path, name: str) -> Any:
     """
     is_async = inspect.iscoroutinefunction(fn)
 
-    async def settle(coro: Any) -> Any:
+    def outcome(ok: bool, start: float) -> None:
+        if call_log is not None:
+            call_log.append({
+                "skill": name, "fn": fn_name, "success": ok,
+                "duration_ms": round((time.monotonic() - start) * 1000, 2),
+            })
+        record_outcome(skill_dir, ok=ok)
+
+    async def settle(coro: Any, start: float) -> Any:
         token = active_skill.set(name)
         try:
             result = await coro
         except Exception:
-            record_outcome(skill_dir, ok=False)
+            outcome(False, start)
             raise
         finally:
             active_skill.reset(token)
-        record_outcome(skill_dir, ok=True)
+        outcome(True, start)
         return result
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        start = time.monotonic()
         token = active_skill.set(name)
         try:
             result = fn(*args, **kwargs)
         except Exception:
-            record_outcome(skill_dir, ok=False)
+            outcome(False, start)
             raise
         finally:
             active_skill.reset(token)
         if is_async:
-            return settle(result)
-        record_outcome(skill_dir, ok=True)
+            return settle(result, start)
+        outcome(True, start)
         return result
 
     return wrapper
@@ -256,13 +283,15 @@ class SkillsNamespace:
     the per-session workspace-bound safe_open before each user run.
     """
 
-    __slots__ = ("_proxies", "_shared_builtins", "root", "replacements")
+    __slots__ = ("_proxies", "_shared_builtins", "root", "replacements", "_call_log")
 
     def __init__(self, specs: dict[str, SkillSpec]) -> None:
         self._proxies: dict[str, Any] = {}
         # "server.tool" -> "skills.<name>.<fn>": what the side-effect gate
         # recommends instead of a raw tool a skill declared via `replaces:`.
         self.replacements: dict[str, str] = {}
+        # One entry per skill-callable call since the last drain_calls().
+        self._call_log: list[dict[str, Any]] = []
         # Where these skills were loaded from. Skill callables can't be pickled
         # across to an isolation child, so the child reloads from this path —
         # carrying it on the namespace means a caller can't wire up skills and
@@ -286,7 +315,9 @@ class SkillsNamespace:
                 k: v for k, v in module_ns.items()
                 if callable(v) and not k.startswith("_")
             }
-            self._proxies[name] = SkillProxy(name, callables, spec.path)
+            self._proxies[name] = SkillProxy(
+                name, callables, spec.path, self._call_log
+            )
             # `server.tool:fn` names the replacing function; bare `server.tool`
             # points at the skill as a whole rather than guessing a function.
             for raw in spec.replaces:
@@ -310,6 +341,23 @@ class SkillsNamespace:
             if fn is not None:
                 out.append((skill_name, fn))
         return out
+
+    def catalog(self) -> dict[str, list[str]]:
+        """Skill name → its public functions; a skill that failed to load has none."""
+        return {
+            name: sorted(proxy._callables) if isinstance(proxy, SkillProxy) else []
+            for name, proxy in sorted(self._proxies.items())
+        }
+
+    def drain_calls(self) -> list[dict[str, Any]]:
+        """Return and clear the calls logged since the previous drain.
+
+        The executor drains once per run (runs are serialized), so the list
+        holds exactly that run's skill calls.
+        """
+        calls = list(self._call_log)
+        self._call_log.clear()
+        return calls
 
     def bind(self, name: str, value: Any) -> None:
         """Override a builtin seen by all loaded skills.

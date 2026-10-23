@@ -15,6 +15,9 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
   breakdown by error class. A class that grows is a missing HINT; a growing
   `syntax_share` means calls are being routed here that should have been direct
   tool calls (7d baseline as of 2026-08-02: 274/1457 failed, SyntaxError share 0.0%).
+  `skill_call` events (one per `skills.<name>.<fn>` call, child calls included) feed
+  `summarize_skills` behind `get_metrics(skills=True)`: calls, error %, last call per
+  function and trim candidates (unused / failing, thresholds `SKILL_TRIM_*`, SHA-484).
 - `workspace.py` — injected `open()`: writes confined to `~/.cache/code-runner/workspace/<session_id>/` (relative paths), reads may also reach absolute paths under `CODE_RUNNER_READ_ROOTS` minus a secret deny-list. Text modes default to UTF-8.
 - `skills.py` — discovers `~/.claude/code-runner-skills/<name>/`, exposes `skills.<name>.<fn>` proxy.
 
