@@ -107,6 +107,12 @@ matches (`restore.py`, SHA-482) — no downstream call is repeated.
   workspace `open()`, and the error HINTs all work there; only the str-result HINT is
   applied parent-side, since it needs the run's tool-call stats.
 - Skills run with full builtins (trusted local code), user code in `execute_code` does not
+- **Taint (SHA-481)** — run-level, within one `execute_code`: text returned by an untrusted server
+  (`CODE_RUNNER_UNTRUSTED_SERVERS`, comma-separated fnmatch against the original and the py name;
+  default `wigolo,firecrawl,exa,mcp-email*,twitter,youtube-transcript`) is remembered. A side-effecting
+  call whose string args (nested dicts/lists walked) share a substring of `TAINT_MIN_MATCH` = 20 chars with it
+  raises `PermissionError` even under `allow_side_effects`; `allow_tainted=["server.tool" | "server.*"]` lifts it.
+  Limits: a paraphrased/re-encoded copy or pieces <20 chars slip through; state does not cross `execute_code` calls.
 
 ## Opt-in features
 
