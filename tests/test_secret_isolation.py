@@ -69,6 +69,20 @@ def test_private_attribute_refused_by_validator(isolation):
     assert "private attribute access is not allowed: _caller" in result["error"]
 
 
+@pytest.mark.parametrize(
+    "code",
+    [
+        "match 1:\n    case int(_caller=c):\n        pass",
+        "match 1:\n    case int(__class__=c):\n        pass",
+        "match '':\n    case str(format=f):\n        pass",
+    ],
+)
+def test_class_pattern_attribute_refused(code):
+    ex = CodeExecutor(_Pool(), isolation="inprocess", mem_limit_mb=1024)
+    result = asyncio.run(ex.execute(code, timeout=5))
+    assert "not allowed" in result["error"]
+
+
 @pytest.mark.parametrize("isolation", ISOLATIONS)
 def test_namedtuple_api_still_allowed(isolation):
     ex = CodeExecutor(_Pool(), isolation=isolation, mem_limit_mb=1024)
@@ -91,6 +105,9 @@ FORMAT_PROBES = [
     "print(string.Formatter().format('{0._session.headers}', srv))",
     "print(string.Formatter().vformat('{0._session.headers}', (srv,), {}))",
     "print(__cr_format_attr__(srv, '_caller').configs)",
+    "print(collections.UserString('{0._caller.configs}').format(srv))",
+    "U = collections.UserString\nprint(U.format_map(U('{s._caller.configs}'), {'s': srv}))",
+    "match '{0._caller.configs}':\n    case str(format=f):\n        print(f(srv))",
 ]
 
 
@@ -117,8 +134,9 @@ def test_format_public_fields_still_work(isolation):
     result = asyncio.run(ex.execute(
         "print('{0} {a[x]} {b.real:>3} {0!r}'.format('p', a={'x': 2}, b=3),"
         " '{k}'.format_map({'k': 4}), str.format('{}', 5),"
-        " string.Formatter().format('{0.imag}', 6), '{}'.format(7))",
+        " string.Formatter().format('{0.imag}', 6), '{}'.format(7),"
+        " collections.UserString('{}').format(8))",
         timeout=5,
     ))
     assert result["success"] is True, result["error"]
-    assert result["output"].strip() == "p 2   3 'p' 4 5 0 7"
+    assert result["output"].strip() == "p 2   3 'p' 4 5 0 7 8"

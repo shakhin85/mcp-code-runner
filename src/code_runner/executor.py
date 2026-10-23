@@ -213,14 +213,16 @@ def _format_attr(obj: Any, name: str) -> Any:
     """Target of every `<expr>.format` / `<expr>.format_map` load in user code
     (_rewrite_format_attrs). `str` methods are C code that `getattr` past any
     Python-level check, so for a str (or the str type) the checked formatter
-    stands in; any other object gets its own attribute. The hook is a plain
-    name in the namespace, so `name` is pinned or it would be a getattr."""
+    stands in; `UserString` too, since its methods forward to `str.format`.
+    Any other object gets its own attribute. The hook is a plain name in the
+    namespace, so `name` is pinned or it would be a getattr."""
     if name not in _SAFE_STR_METHODS:
         raise AttributeError(f"{_FORMAT_HOOK} only resolves format/format_map")
-    if isinstance(obj, str):
-        return functools.partial(_SAFE_STR_METHODS[name], obj)
-    if isinstance(obj, type) and issubclass(obj, str):
-        return _SAFE_STR_METHODS[name]
+    method = _SAFE_STR_METHODS[name]
+    if isinstance(obj, (str, collections.UserString)):
+        return functools.partial(method, str(obj))
+    if isinstance(obj, type) and issubclass(obj, (str, collections.UserString)):
+        return lambda self, /, *args, **kwargs: method(str(self), *args, **kwargs)
     return getattr(obj, name)
 
 
@@ -784,30 +786,37 @@ def validate_code(code: str) -> None:
                 f"import statements are not allowed: {', '.join(names)}{hint}"
             )
 
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr.startswith("__")
-            and node.attr.endswith("__")
-            and node.attr not in ALLOWED_DUNDER_ATTRS
-        ):
-            raise ValueError(
-                f"dunder attribute access is not allowed: {node.attr}"
-            )
+        if isinstance(node, ast.Attribute):
+            _check_attr_name(node.attr)
 
-        # Private attributes reach framework state — under in-process
-        # isolation `srv._caller.configs` / `srv._session.headers` exposed
-        # downstream auth headers and env tokens. namedtuple's public API is
-        # the one `_`-prefixed surface sandbox code legitimately needs.
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr.startswith("_")
-            and not node.attr.startswith("__")
-            and node.attr not in _ALLOWED_PRIVATE_ATTRS
-        ):
-            raise ValueError(
-                f"private attribute access is not allowed: {node.attr} — "
-                "blocked: `_`-attributes reach framework state (credentials)"
-            )
+        # `case C(attr=x)` is a getattr too, and _rewrite_format_attrs never
+        # sees it, so `case str(format=f)` would hand out the raw method.
+        if isinstance(node, ast.MatchClass):
+            for attr in node.kwd_attrs:
+                _check_attr_name(attr)
+                if attr in _FORMAT_ATTRS:
+                    raise ValueError(
+                        f"`{attr}` is not allowed in a class pattern — call x.{attr}(...)"
+                    )
+
+
+def _check_attr_name(attr: str) -> None:
+    if attr.startswith("__") and attr.endswith("__") and attr not in ALLOWED_DUNDER_ATTRS:
+        raise ValueError(f"dunder attribute access is not allowed: {attr}")
+
+    # Private attributes reach framework state — under in-process
+    # isolation `srv._caller.configs` / `srv._session.headers` exposed
+    # downstream auth headers and env tokens. namedtuple's public API is
+    # the one `_`-prefixed surface sandbox code legitimately needs.
+    if (
+        attr.startswith("_")
+        and not attr.startswith("__")
+        and attr not in _ALLOWED_PRIVATE_ATTRS
+    ):
+        raise ValueError(
+            f"private attribute access is not allowed: {attr} — "
+            "blocked: `_`-attributes reach framework state (credentials)"
+        )
 
 
 _RESULT_SENTINEL = "__cr_result__"
