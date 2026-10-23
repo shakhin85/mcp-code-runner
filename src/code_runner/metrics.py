@@ -14,7 +14,7 @@ import os
 import re
 import sys
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +71,95 @@ def classify_error(error: str | None) -> str | None:
     return "Other"
 
 
+# SHA-483: HINT с прошлым фиксом. Ключ ошибки — класс + tool (если ошибка пришла
+# из MCP-вызова), фрагмент фикса — поле fix_line следующего успешного блока сессии.
+PAST_FIX_WINDOW_DAYS = 7
+PAST_FIX_MAX_CHARS = 300
+_TOOL_RE = re.compile(r"\b([A-Za-z_]\w*\.[A-Za-z_]\w*) returned an error:")
+_STRING_LITERAL_RE = re.compile(r"""(["'])(?:\\.|(?!\1).)*(?:\1|$)""")
+
+
+def error_key(error: str | None) -> tuple[str, str] | None:
+    """(класс, tool) ошибки; tool пуст, если ошибка не из MCP-вызова."""
+    cls = classify_error(error)
+    if cls is None:
+        return None
+    m = _TOOL_RE.search(error or "")
+    return (cls, m.group(1) if m else "")
+
+
+def fix_fragment(failed_code: str, fixed_code: str) -> str:
+    """Первая строка fixed_code, которой не было в failed_code, до 300 символов.
+
+    Строковые литералы заменены на '…': в metrics.jsonl не должны попадать
+    значения аргументов tool (токены, SQL, ключи).
+    """
+    old = {ln.strip() for ln in failed_code.splitlines()}
+    lines = [ln.strip() for ln in fixed_code.splitlines() if ln.strip()]
+    line = next((ln for ln in lines if ln not in old), lines[0] if lines else "")
+    line = _STRING_LITERAL_RE.sub(lambda m: m.group(1) + "…" + m.group(1), line)
+    return line[:PAST_FIX_MAX_CHARS]
+
+
+class PastFixIndex:
+    """Ленивый индекс «ключ ошибки → как исправили в прошлый раз».
+
+    Файл не читается при создании и пока не пришла ошибка; кэш живёт, пока не
+    меняются mtime и размер основного файла метрик.
+    """
+
+    def __init__(self, recorder: "MetricsRecorder", days: int = PAST_FIX_WINDOW_DAYS) -> None:
+        self._recorder = recorder
+        self._days = days
+        self._sig: tuple[int, int] | None = None
+        self._fixes: dict[tuple[str, str], str] = {}
+
+    def _load(self) -> dict[tuple[str, str], str]:
+        try:
+            st = self._recorder.path.stat()
+        except OSError:
+            return {}
+        sig = (st.st_mtime_ns, st.st_size)
+        if sig != self._sig:
+            self._fixes = self._build()
+            self._sig = sig
+        return self._fixes
+
+    def _build(self) -> dict[tuple[str, str], str]:
+        since = (datetime.now(UTC) - timedelta(days=self._days)).strftime("%Y-%m-%dT%H:%M:%S")
+        pending: dict[str, set[tuple[str, str]]] = {}
+        fixes: dict[tuple[str, str], str] = {}
+        for ev in self._recorder.read(since=since, limit=0):
+            sid = ev.get("session_id")
+            if ev.get("kind") != "execute_code" or not sid:
+                continue
+            if ev.get("success") is False:
+                key = error_key(ev.get("error"))
+                if key:
+                    pending.setdefault(sid, set()).add(key)
+            elif ev.get("success") is True:
+                frag = ev.get("fix_line")
+                for key in pending.pop(sid, ()):
+                    if isinstance(frag, str) and frag:
+                        fixes[key] = frag
+        return fixes
+
+    def hint(self, error: str | None) -> str:
+        """Одна строка HINT (с ведущим переводом строки) или пустая строка."""
+        key = error_key(error)
+        if key is None:
+            return ""
+        try:
+            frag = self._load().get(key)
+        except Exception:
+            return ""
+        if not frag:
+            return ""
+        cls, tool = key
+        head = f"HINT: в прошлый раз {cls}{f' ({tool})' if tool else ''} исправили так: "
+        return "\n\n" + (head + frag)[:PAST_FIX_MAX_CHARS]
+
+
 def summarize_errors(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate execute_code events into a failure breakdown.
 
@@ -86,6 +175,17 @@ def summarize_errors(events: list[dict[str, Any]]) -> dict[str, Any]:
     for ev in failures:
         cls = ev.get("error_class") or classify_error(ev.get("error")) or "Other"
         by_class[cls] = by_class.get(cls, 0) + 1
+    seen: set[tuple[str, tuple[str, str]]] = set()
+    repeats = 0
+    for ev in failures:
+        sid = ev.get("session_id")
+        if not sid:
+            continue
+        cls = ev.get("error_class") or classify_error(ev.get("error")) or "Other"
+        mark = (sid, error_key(ev.get("error")) or (cls, ""))
+        if mark in seen:
+            repeats += 1
+        seen.add(mark)
     total = len(runs)
     ordered = dict(sorted(by_class.items(), key=lambda kv: (-kv[1], kv[0])))
     return {
@@ -93,6 +193,8 @@ def summarize_errors(events: list[dict[str, Any]]) -> dict[str, Any]:
         "failed": len(failures),
         "fail_rate": round(len(failures) / total, 4) if total else 0.0,
         "by_error_class": ordered,
+        "repeat_errors": repeats,
+        "repeat_error_share": round(repeats / len(failures), 4) if failures else 0.0,
         "syntax_errors": by_class.get("SyntaxError", 0),
         "syntax_share": (
             round(by_class.get("SyntaxError", 0) / total, 4) if total else 0.0
@@ -293,6 +395,8 @@ class MetricsRecorder:
                         try:
                             ev = json.loads(line)
                         except json.JSONDecodeError:
+                            continue
+                        if not isinstance(ev, dict):
                             continue
                         if since and ev.get("ts", "") < since:
                             continue

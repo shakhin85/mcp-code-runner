@@ -504,6 +504,9 @@ async def get_metrics(
       - "execute_code": one per execute_code call — a rollup with total
         duration, output_bytes_raw/sent, truncated flag, tool_calls count,
         auto_limit_hits count, session_id.
+        A success right after a failed block of the same session also carries
+        fix_line (first changed line, string literals masked, <=300 chars) —
+        the source of the "HINT: в прошлый раз …" line on a repeated error.
       - "skill_call": one per `skills.<name>.<fn>` call (skill, fn, success,
         duration_ms, session_id).
 
