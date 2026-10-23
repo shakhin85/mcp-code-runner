@@ -409,6 +409,7 @@ async def execute_code(
     raw_cap: int = 262144,
     per_call_timeout: float = 30.0,
     allow_side_effects: list[str] | None = None,
+    allow_tainted: list[str] | None = None,
 ) -> str:
     """
     Execute Python code with access to all connected MCP tools.
@@ -461,6 +462,13 @@ async def execute_code(
             sandboxed `await server.tool(...)` call bypasses the approval
             hooks that gate direct MCP calls. Use "<server>.*" to allow every
             side-effecting tool on one server. Omit for read-only code.
+        allow_tainted: Same forms as allow_side_effects ("server.tool",
+            "server.*"). Text returned by an untrusted server (web, mail,
+            social; env CODE_RUNNER_UNTRUSTED_SERVERS) is tracked within the
+            run; a side-effecting call whose arguments contain 20+ identical
+            chars of it raises `PermissionError` even under
+            allow_side_effects, naming the exact entry to pass here. Allow
+            only after checking the content is safe to write.
     """
     executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
 
@@ -474,6 +482,7 @@ async def execute_code(
         extra_pool=await _project_pool(ctx, code),
         per_call_timeout=per_call_timeout,
         allow_side_effects=allow_side_effects,
+        allow_tainted=allow_tainted,
     )
 
     lines = []

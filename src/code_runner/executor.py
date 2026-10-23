@@ -15,6 +15,7 @@ import dataclasses
 import datetime
 import decimal
 import difflib
+import fnmatch
 import functools
 import hashlib
 import heapq
@@ -35,6 +36,7 @@ import time
 import traceback
 import types
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -346,6 +348,77 @@ def _gated_name(tool_name: str, kwargs: dict) -> str:
     generic dispatcher, the tool itself otherwise."""
     arg = _DISPATCHER_ARGS.get(tool_name)
     return str(kwargs.get(arg, tool_name)) if arg else tool_name
+
+
+# SHA-481: run-level taint. Text returned by an untrusted server (web, mail,
+# social) is remembered for the duration of one execute_code; a side-effecting
+# call whose string arguments share a substring of TAINT_MIN_MATCH+ chars with
+# it is refused even under allow_side_effects. Known limits: a paraphrased or
+# re-encoded copy slips through; the same text split across several arguments
+# or calls, each piece under the threshold, too.
+TAINT_MIN_MATCH = 20
+_UNTRUSTED_SERVERS_DEFAULT = (
+    "wigolo,firecrawl,exa,mcp-email*,twitter,youtube-transcript"
+)
+
+
+def _untrusted_patterns() -> list[str]:
+    raw = os.environ.get("CODE_RUNNER_UNTRUSTED_SERVERS", _UNTRUSTED_SERVERS_DEFAULT)
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def _arg_strings(value: Any) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            yield from _arg_strings(k)
+            yield from _arg_strings(v)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for v in value:
+            yield from _arg_strings(v)
+
+
+class TaintGate:
+    """Per-run record of untrusted tool output plus the check against it."""
+
+    def __init__(
+        self,
+        allowed_tainted: list[str] | None = None,
+        untrusted_patterns: list[str] | None = None,
+    ):
+        self._allowed = set(allowed_tainted or [])
+        self._patterns = (
+            _untrusted_patterns() if untrusted_patterns is None else untrusted_patterns
+        )
+        self._texts: list[tuple[str, str]] = []
+
+    def is_untrusted(self, server: str) -> bool:
+        names = (server, server_name_to_py(server))
+        return any(fnmatch.fnmatchcase(n, p) for p in self._patterns for n in names)
+
+    def record(self, server: str, text: str) -> None:
+        if len(text) >= TAINT_MIN_MATCH and self.is_untrusted(server):
+            self._texts.append((server, text))
+
+    def check(self, server: str, tool: str, kwargs: dict) -> None:
+        if not self._texts or f"{server}.{tool}" in self._allowed or f"{server}.*" in self._allowed:
+            return
+        n = TAINT_MIN_MATCH
+        grams = {
+            a[i : i + n]
+            for a in _arg_strings(kwargs)
+            for i in range(len(a) - n + 1)
+        }
+        if not grams:
+            return
+        for source, text in self._texts:
+            if any(text[i : i + n] in grams for i in range(len(text) - n + 1)):
+                raise PermissionError(
+                    f"{server}.{tool}: argument contains {n}+ chars returned by "
+                    f"untrusted server {source}; pass "
+                    f'allow_tainted=["{server}.{tool}"] to execute_code'
+                )
 
 
 # SHA-124: per-session journal of proxied tool calls — the repro for a
@@ -1231,8 +1304,10 @@ class _ToolNamespace:
         allowed_side_effects: list[str] | None = None,
         journal: Path | None = None,
         replacements: dict[str, str] | None = None,
+        taint: TaintGate | None = None,
     ):
         self._server_name = server_name
+        self._taint = taint
         self._session = session
         self._tools = {t.name: t for t in tools}
         self._auto_limit = auto_limit
@@ -1282,6 +1357,7 @@ class _ToolNamespace:
         call_timeout = self._call_timeout
         allowed = self._allowed_side_effects
         replacements = self._replacements
+        taint = self._taint
 
         async def wrapper(**kwargs):
             # SHA-123: deny-by-default gate on side-effecting tools — checked
@@ -1302,6 +1378,8 @@ class _ToolNamespace:
                     f"{hint}{server}.{gated} is side-effecting; pass "
                     f'allow_side_effects=["{server}.{gated}"] to execute_code'
                 )
+            if taint is not None and _is_side_effecting(gated):
+                taint.check(server, gated, kwargs)
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
             if limit_applied and self._stats is not None:
                 self._stats["auto_limit_hits"] += 1
@@ -1330,6 +1408,8 @@ class _ToolNamespace:
                     elif hasattr(content, "data"):
                         texts.append(json.dumps(content.data, ensure_ascii=False))
                 combined = "\n".join(texts)
+                if taint is not None:
+                    taint.record(server, combined)
                 out_bytes = len(combined.encode("utf-8"))
                 # A tool reporting an error (MCP isError=True) carries the
                 # failure detail in `content`. Surface it as an exception so
@@ -1503,6 +1583,7 @@ class CodeExecutor:
         call_timeout: float,
         allow_side_effects: list[str] | None = None,
         session_id: str | None = None,
+        allow_tainted: list[str] | None = None,
     ) -> dict[str, "_ToolNamespace"]:
         """One MCP proxy object per connected server. Shared by the in-process
         namespace and the subprocess broker (which dispatches remote calls to
@@ -1514,6 +1595,7 @@ class CodeExecutor:
             with contextlib.suppress(WorkspaceError):
                 journal = self.workspace.resolve_path(session_id, JOURNAL_NAME)
         replacements = getattr(self.skills, "replacements", None)
+        taint = TaintGate(allow_tainted)
         proxies: dict[str, _ToolNamespace] = {}
         for server_name, session in self.pool.sessions.items():
             py_name = server_name_to_py(server_name)
@@ -1529,6 +1611,7 @@ class CodeExecutor:
                 allowed_side_effects=allow_side_effects,
                 journal=journal,
                 replacements=replacements,
+                taint=taint,
             )
         # Project-level servers (daemon mode): only names the global pool
         # doesn't already serve — global wins on collision.
@@ -1549,6 +1632,7 @@ class CodeExecutor:
                     allowed_side_effects=allow_side_effects,
                     journal=journal,
                     replacements=replacements,
+                    taint=taint,
                 )
         return proxies
 
@@ -1560,6 +1644,7 @@ class CodeExecutor:
         raw_cap: int = 0,
         call_timeout: float = 0,
         allow_side_effects: list[str] | None = None,
+        allow_tainted: list[str] | None = None,
     ) -> tuple[dict[str, Any], set[str]]:
         safe_builtins = make_safe_builtins()
         namespace: dict[str, Any] = {
@@ -1595,7 +1680,8 @@ class CodeExecutor:
 
         namespace.update(
             self._build_proxies(
-                auto_limit, stats, raw_cap, call_timeout, allow_side_effects, session_id
+                auto_limit, stats, raw_cap, call_timeout, allow_side_effects, session_id,
+                allow_tainted,
             )
         )
 
@@ -1643,6 +1729,7 @@ class CodeExecutor:
         stats: dict[str, Any],
         call_timeout: float,
         allow_side_effects: list[str] | None = None,
+        allow_tainted: list[str] | None = None,
     ) -> tuple[bool, str, str | None, list[dict[str, Any]]]:
         """Run user code in a fresh rlimited child; proxy its MCP calls back here.
 
@@ -1655,8 +1742,9 @@ class CodeExecutor:
         from . import subprocess_worker  # lazy: the worker imports from this module
 
         proxies = self._build_proxies(
-                auto_limit, stats, raw_cap, call_timeout, allow_side_effects, session_id
-            )
+            auto_limit, stats, raw_cap, call_timeout, allow_side_effects, session_id,
+            allow_tainted,
+        )
         servers = [
             {"py_name": py_name, "tools": [n.replace("-", "_") for n in proxy._tools]}
             for py_name, proxy in proxies.items()
@@ -1772,6 +1860,7 @@ class CodeExecutor:
         extra_pool=None,
         per_call_timeout: float = DEFAULT_PER_CALL_TIMEOUT,
         allow_side_effects: list[str] | None = None,
+        allow_tainted: list[str] | None = None,
     ) -> dict[str, Any]:
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
@@ -1781,7 +1870,7 @@ class CodeExecutor:
             try:
                 return await self._execute_locked(
                     code, timeout, max_output_bytes, session_id, auto_limit, raw_cap,
-                    per_call_timeout, allow_side_effects,
+                    per_call_timeout, allow_side_effects, allow_tainted,
                 )
             finally:
                 self._extra_pool = None
@@ -1796,6 +1885,7 @@ class CodeExecutor:
         raw_cap: int = DEFAULT_RAW_CAP,
         per_call_timeout: float = DEFAULT_PER_CALL_TIMEOUT,
         allow_side_effects: list[str] | None = None,
+        allow_tainted: list[str] | None = None,
     ) -> dict[str, Any]:
         start_exec = time.monotonic()
         # Fingerprint the code as the caller sent it, before _transform_last_expr
@@ -1903,7 +1993,7 @@ class CodeExecutor:
             try:
                 success, output, error, child_calls = await self._run_in_subprocess(
                     code, session_id, timeout, auto_limit, raw_cap, stats, per_call_timeout,
-                    allow_side_effects,
+                    allow_side_effects, allow_tainted,
                 )
             except Exception as e:
                 return finalize(
@@ -1913,7 +2003,8 @@ class CodeExecutor:
             return finalize(success, output, error, child_calls)
 
         namespace, framework_names = self._build_namespace(
-            session_id, auto_limit, stats, raw_cap, per_call_timeout, allow_side_effects
+            session_id, auto_limit, stats, raw_cap, per_call_timeout, allow_side_effects,
+            allow_tainted,
         )
 
         output_lines: list[str] = []
