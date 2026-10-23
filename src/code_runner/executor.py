@@ -44,6 +44,7 @@ from mcp.types import Tool
 from . import prelude as _prelude
 from .config_reader import server_name_to_py
 from .metrics import MetricsRecorder, classify_error, code_fingerprint
+from .restore import make_restore, saved_output_name
 from .skills import SkillsNamespace, active_skill
 from .sql_limit import inject_limit
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
@@ -460,7 +461,7 @@ class _SessionState:
         self.dropped: frozenset[str] = frozenset()
 
 
-def _truncate_output(output: str, max_bytes: int, saved_as: str | None = None) -> str:
+def _truncate_output(output: str, max_bytes: int, saved_as: int | None = None) -> str:
     """Truncate output to max_bytes (UTF-8 safe) with an informative footer.
 
     Protects the model's context from runaway MCP responses (SELECT * without
@@ -471,8 +472,9 @@ def _truncate_output(output: str, max_bytes: int, saved_as: str | None = None) -
     marker, so a consuming model can detect partial output instead of
     silently treating the truncated slice as the whole result.
 
-    ``saved_as`` names the workspace file holding the full output: the cut is
-    then reversible — the next block reads the tail instead of re-running.
+    ``saved_as`` is the block id whose full output sits in the workspace: the
+    cut is then reversible — the next block calls ``restore(id, ...)`` for the
+    part it needs instead of re-running (SHA-482).
     """
     if max_bytes <= 0 or not output:
         return output
@@ -483,8 +485,10 @@ def _truncate_output(output: str, max_bytes: int, saved_as: str | None = None) -
     kept = encoded[:max_bytes].decode("utf-8", errors="ignore")
     shown_bytes = len(kept.encode("utf-8"))
     remedy = (
-        f"Full output saved: open('{saved_as}') in the same session_id."
-        if saved_as
+        f"Full output saved as block {saved_as}: in the same session_id call "
+        f"restore({saved_as}, start, end) for lines or "
+        f"restore({saved_as}, grep='regex', context=2) — no re-run needed."
+        if saved_as is not None
         else "Use SQL LIMIT/TOP, pagination, or narrow your query."
     )
     footer = (
@@ -1578,6 +1582,7 @@ class CodeExecutor:
             def _denied(*_a, **_kw):
                 raise WorkspaceError("open() requires session_id")
             namespace["open"] = _denied
+        namespace["restore"] = make_restore(namespace["open"])
 
         namespace.update(
             self._build_proxies(
@@ -1821,11 +1826,11 @@ class CodeExecutor:
                 and output
                 and len(output.encode("utf-8")) > max_output_bytes
             ):
-                saved_as = f"out_{block_no}.txt"
+                saved_as = block_no
                 try:
-                    self.workspace.resolve_path(session_id, saved_as).write_text(
-                        output, encoding="utf-8"
-                    )
+                    self.workspace.resolve_path(
+                        session_id, saved_output_name(block_no)
+                    ).write_text(output, encoding="utf-8")
                 except OSError:
                     saved_as = None
             truncated = _truncate_output(output, max_output_bytes, saved_as)

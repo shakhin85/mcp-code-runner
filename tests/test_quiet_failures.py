@@ -103,11 +103,61 @@ def test_saturated_auto_limit_reaches_receipt(tmp_path):
 def test_truncated_output_saved_to_workspace(tmp_path):
     ex = _executor(tmp_path, "[]")
     r = asyncio.run(ex.execute("print('x' * 5000 + 'TAIL')", max_output_bytes=100, session_id="t1"))
-    assert "open('out_1.txt')" in r["output"]
+    assert "restore(1, " in r["output"]
     saved = (tmp_path / "t1" / "out_1.txt").read_text(encoding="utf-8")
     assert saved.rstrip().endswith("TAIL")
     r2 = asyncio.run(ex.execute("print(open('out_1.txt').read()[-5:])", session_id="t1"))
     assert "TAIL" in r2["output"]
+
+
+class _CountingSession(_Session):
+    calls = 0
+
+    async def call_tool(self, name, kwargs):
+        type(self).calls += 1
+        return await super().call_tool(name, kwargs)
+
+
+def test_restore_returns_fragment_without_downstream_call(tmp_path):
+    rows = ",".join(f'{{"id": {i}, "name": "row{i}"}}' for i in range(300))
+    session = _CountingSession(f"[{rows}]")
+
+    class FakePool:
+        sessions = {"postgres": session}
+        tools = {"postgres": [_Tool("execute_sql")]}
+
+    ex = CodeExecutor(FakePool(), workspace=WorkspaceManager(tmp_path))
+    r = asyncio.run(ex.execute(
+        "rows = await postgres.execute_sql(sql='select id, name from t limit 300')\n"
+        "for x in rows: print(x['id'], x['name'])",
+        max_output_bytes=200, session_id="t1",
+    ))
+    assert r["success"] is True, r["error"]
+    assert "Full output saved as block 1" in r["output"]
+    assert _CountingSession.calls == 1
+
+    r2 = asyncio.run(ex.execute(
+        "print(restore(1, 250, 252))\nprint('--')\nprint(restore(1, grep='row17\\\\b', context=1))",
+        session_id="t1",
+    ))
+    assert r2["success"] is True, r2["error"]
+    assert "250 row250\n251 row251\n--" in r2["output"]
+    assert "17: 16 row16\n18: 17 row17\n19: 18 row18" in r2["output"]
+    assert _CountingSession.calls == 1
+
+
+def test_restore_unknown_block_names_the_cause(tmp_path):
+    ex = _executor(tmp_path, "[]")
+    r = asyncio.run(ex.execute("restore(7)", session_id="t1"))
+    assert r["success"] is False
+    assert "no saved output for block 7" in r["error"]
+
+
+def test_restore_requires_session_id(tmp_path):
+    ex = _executor(tmp_path, "[]")
+    r = asyncio.run(ex.execute("restore(1)"))
+    assert r["success"] is False
+    assert "requires session_id" in r["error"]
 
 
 def test_truncation_without_session_keeps_old_advice(tmp_path):
