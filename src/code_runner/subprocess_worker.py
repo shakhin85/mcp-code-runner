@@ -40,12 +40,12 @@ from .executor import (
     _RESULT_SENTINEL,
     _SAFE_ASYNCIO_WRAPPED,
     _SAFE_MODULES_WRAPPED,
-    SAFE_BUILTINS,
     _format_attr,
     _format_user_traceback,
     _limit_error_hint,
     _name_error_hint,
     _signature_hint,
+    make_safe_builtins,
 )
 from .skills import SkillLoader, SkillsNamespace, active_skill
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
@@ -164,11 +164,7 @@ class _RpcBridge:
 
 
 def _build_child_namespace(payload: dict, rpc: _RpcBridge) -> tuple[dict, set[str], list[str]]:
-    safe_builtins = {
-        name: getattr(_builtins, name)
-        for name in SAFE_BUILTINS
-        if hasattr(_builtins, name)
-    }
+    safe_builtins = make_safe_builtins()
     output_lines: list[str] = []
 
     def captured_print(*args, sep=" ", end="\n", **_kwargs):

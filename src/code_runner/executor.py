@@ -68,6 +68,25 @@ SAFE_BUILTINS = {
     # vars, globals, locals, dir, eval, exec, compile, open, __import__, input.
 }
 
+# Modules that C code of SAFE_MODULES imports at call time through the caller's
+# __builtins__ (datetime.strftime → time, datetime.strptime → _strptime). User
+# code can't reach `__import__` itself: validate_code refuses dunder names.
+_C_LEVEL_IMPORTS = frozenset({"time", "_strptime"})
+
+
+def _c_level_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level == 0 and name in _C_LEVEL_IMPORTS:
+        return builtins.__import__(name, globals, locals, fromlist, level)
+    raise ImportError(f"import of {name!r} is not allowed in sandbox")
+
+
+def make_safe_builtins() -> dict[str, Any]:
+    """The sandbox __builtins__ dict, shared by in-process and child namespaces."""
+    # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
+    safe = {name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)}
+    safe["__import__"] = _c_level_import
+    return safe
+
 # Safe asyncio subset — no subprocess access
 _SAFE_ASYNCIO = types.ModuleType("asyncio")
 _SAFE_ASYNCIO.sleep = asyncio.sleep
@@ -789,6 +808,11 @@ def validate_code(code: str) -> None:
         if isinstance(node, ast.Attribute):
             _check_attr_name(node.attr)
 
+        # Bare dunder names reach the sandbox __builtins__ itself: `__import__`
+        # is there for C code (strftime → time) and must not serve user code.
+        if isinstance(node, ast.Name) and node.id.startswith("__") and node.id.endswith("__"):
+            raise ValueError(f"dunder name is not allowed: {node.id}")
+
         # `case C(attr=x)` is a getattr too, and _rewrite_format_attrs never
         # sees it, so `case str(format=f)` would hand out the raw method.
         # `case C(x)` reads the attribute named in C.__match_args__ — a string
@@ -1505,10 +1529,7 @@ class CodeExecutor:
         call_timeout: float = 0,
         allow_side_effects: list[str] | None = None,
     ) -> tuple[dict[str, Any], set[str]]:
-        # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
-        safe_builtins = {
-            name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)
-        }
+        safe_builtins = make_safe_builtins()
         namespace: dict[str, Any] = {
             "__builtins__": safe_builtins,
             "asyncio": _SAFE_ASYNCIO_WRAPPED,
