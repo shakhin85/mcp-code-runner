@@ -185,6 +185,10 @@ active_skill: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "active_skill", default=None
 )
 
+# Builtin name under which skills see the skill-side MCP proxies (SHA-502).
+# ~/.claude/lib/skill_ns.py resolves servers from it, never from user frames.
+SKILL_SERVERS = "_cr_servers"
+
 
 def _with_outcome(
     fn: Any,

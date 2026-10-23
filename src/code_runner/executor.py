@@ -44,6 +44,7 @@ from mcp import ClientSession
 from mcp.types import Tool
 
 from . import prelude as _prelude
+from . import secret_gate
 from .config_reader import server_name_to_py
 from .metrics import (
     MetricsRecorder,
@@ -53,7 +54,7 @@ from .metrics import (
     fix_fragment,
 )
 from .restore import make_restore, saved_output_name
-from .skills import SkillsNamespace, active_skill
+from .skills import SKILL_SERVERS, SkillsNamespace, active_skill
 from .sql_limit import inject_limit
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
@@ -1305,9 +1306,14 @@ class _ToolNamespace:
         journal: Path | None = None,
         replacements: dict[str, str] | None = None,
         taint: TaintGate | None = None,
+        skill_side: bool = False,
     ):
         self._server_name = server_name
         self._taint = taint
+        # SHA-502: the copy the loader hands to skills (`_cr_servers`), never
+        # reachable from user code. Only it lets a `replaces:` owner through the
+        # side-effect gate; active_skill alone is set while user code runs too.
+        self._skill_side = skill_side
         self._session = session
         self._tools = {t.name: t for t in tools}
         self._auto_limit = auto_limit
@@ -1358,6 +1364,7 @@ class _ToolNamespace:
         allowed = self._allowed_side_effects
         replacements = self._replacements
         taint = self._taint
+        skill_side = self._skill_side
 
         async def wrapper(**kwargs):
             # SHA-123: deny-by-default gate on side-effecting tools — checked
@@ -1365,23 +1372,33 @@ class _ToolNamespace:
             # downstream, no timeout block) so a refused call leaves no trace
             # of having been attempted.
             gated = _gated_name(tool_name, kwargs)
-            if (
-                _is_side_effecting(gated)
-                and f"{server}.{gated}" not in allowed
-                and f"{server}.*" not in allowed
-            ):
+            side_effecting = _is_side_effecting(gated)
+            explicit = f"{server}.{gated}" in allowed or f"{server}.*" in allowed
+            if side_effecting and not explicit:
                 skill = replacements.get(f"{server}.{gated}")
-                if skill and skill.split(".")[1] == active_skill.get():
-                    raise PermissionError(
-                        f"skills.{active_skill.get()} вызывает {server}.{gated}: "
-                        f'передай allow_side_effects=["{server}.{gated}"] в execute_code'
+                owner = skill is not None and skill.split(".")[1] == active_skill.get()
+                if not (owner and skill_side):
+                    # An owner holding the user's proxy (a passed-in client) is
+                    # refused like user code; advising it to use itself is noise.
+                    hint = (
+                        f"skills.{active_skill.get()} вызывает {server}.{gated} через "
+                        f"proxy пользователя: скилл берёт сервер из {SKILL_SERVERS} "
+                        "(~/.claude/lib/skill_ns.py)\n"
+                        if owner
+                        else f"используй {skill}(...) вместо сырого вызова\n" if skill
+                        else ""
                     )
-                hint = f"используй {skill}(...) вместо сырого вызова\n" if skill else ""
-                raise PermissionError(
-                    f"{hint}{server}.{gated} is side-effecting; pass "
-                    f'allow_side_effects=["{server}.{gated}"] to execute_code'
-                )
-            if taint is not None and _is_side_effecting(gated):
+                    raise PermissionError(
+                        f"{hint}{server}.{gated} is side-effecting; pass "
+                        f'allow_side_effects=["{server}.{gated}"] to execute_code'
+                    )
+            # SHA-503: every side-effecting call is scanned, the owner's pass
+            # included — otherwise user code reaches forgetful_create(redact=False)
+            # without any allow. A skill's escape needs allow_side_effects; user
+            # code calling a raw tool has none even then.
+            if side_effecting and not (skill_side and explicit):
+                secret_gate.check(server, gated, kwargs)
+            if taint is not None and side_effecting:
                 taint.check(server, gated, kwargs)
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
             if limit_applied and self._stats is not None:
@@ -1587,10 +1604,11 @@ class CodeExecutor:
         allow_side_effects: list[str] | None = None,
         session_id: str | None = None,
         allow_tainted: list[str] | None = None,
-    ) -> dict[str, "_ToolNamespace"]:
-        """One MCP proxy object per connected server. Shared by the in-process
-        namespace and the subprocess broker (which dispatches remote calls to
-        these same objects)."""
+    ) -> tuple[dict[str, "_ToolNamespace"], dict[str, "_ToolNamespace"]]:
+        """Two MCP proxy objects per connected server: the user's and the
+        skill-side one (SHA-502), sharing stats and taint. Shared by the
+        in-process namespace and the subprocess broker (which dispatches remote
+        calls to these same objects)."""
         # The journal exists iff the session has a workspace: an id the
         # workspace rejects still runs (session vars), open() refuses lazily.
         journal = None
@@ -1600,44 +1618,37 @@ class CodeExecutor:
         replacements = getattr(self.skills, "replacements", None)
         taint = TaintGate(allow_tainted)
         proxies: dict[str, _ToolNamespace] = {}
-        for server_name, session in self.pool.sessions.items():
+        skill_proxies: dict[str, _ToolNamespace] = {}
+
+        def add(server_name: str, session: Any, tools: list[Tool], pool: Any) -> None:
             py_name = server_name_to_py(server_name)
-            tools = self.pool.tools.get(server_name, [])
-            proxies[py_name] = _ToolNamespace(
-                server_name, session, tools,
-                auto_limit=auto_limit,
-                stats=stats,
-                recorder=self.recorder,
-                raw_cap=raw_cap,
-                pool=self.pool,
-                call_timeout=call_timeout,
-                allowed_side_effects=allow_side_effects,
-                journal=journal,
-                replacements=replacements,
-                taint=taint,
-            )
-        # Project-level servers (daemon mode): only names the global pool
-        # doesn't already serve — global wins on collision.
-        extra = self._extra_pool
-        if extra is not None:
-            for server_name, session in extra.sessions.items():
-                py_name = server_name_to_py(server_name)
-                if py_name in proxies:
-                    continue
-                proxies[py_name] = _ToolNamespace(
-                    server_name, session, extra.tools.get(server_name, []),
+            for target, skill_side in ((proxies, False), (skill_proxies, True)):
+                target[py_name] = _ToolNamespace(
+                    server_name, session, tools,
                     auto_limit=auto_limit,
                     stats=stats,
                     recorder=self.recorder,
                     raw_cap=raw_cap,
-                    pool=extra,
+                    pool=pool,
                     call_timeout=call_timeout,
                     allowed_side_effects=allow_side_effects,
                     journal=journal,
                     replacements=replacements,
                     taint=taint,
+                    skill_side=skill_side,
                 )
-        return proxies
+
+        for server_name, session in self.pool.sessions.items():
+            add(server_name, session, self.pool.tools.get(server_name, []), self.pool)
+        # Project-level servers (daemon mode): only names the global pool
+        # doesn't already serve — global wins on collision.
+        extra = self._extra_pool
+        if extra is not None:
+            for server_name, session in extra.sessions.items():
+                if server_name_to_py(server_name) in proxies:
+                    continue
+                add(server_name, session, extra.tools.get(server_name, []), extra)
+        return proxies, skill_proxies
 
     def _build_namespace(
         self,
@@ -1681,12 +1692,11 @@ class CodeExecutor:
             namespace["open"] = _denied
         namespace["restore"] = make_restore(namespace["open"])
 
-        namespace.update(
-            self._build_proxies(
-                auto_limit, stats, raw_cap, call_timeout, allow_side_effects, session_id,
-                allow_tainted,
-            )
+        proxies, skill_proxies = self._build_proxies(
+            auto_limit, stats, raw_cap, call_timeout, allow_side_effects, session_id,
+            allow_tainted,
         )
+        namespace.update(proxies)
 
         if self.skills is not None:
             namespace["skills"] = self.skills
@@ -1694,6 +1704,7 @@ class CodeExecutor:
             # safe_open as the user's top-level code. The exec lock serializes
             # runs so this per-call rebind is safe.
             self.skills.bind("open", namespace["open"])
+            self.skills.bind(SKILL_SERVERS, skill_proxies)
             # Short aliases for hot skill functions (fg_query, md_table, probe, ...).
             # See prelude.ALIASES for the full list. Missing skills are skipped.
             namespace.update(_prelude.build(self.skills))
@@ -1744,7 +1755,7 @@ class CodeExecutor:
         """
         from . import subprocess_worker  # lazy: the worker imports from this module
 
-        proxies = self._build_proxies(
+        proxies, skill_proxies = self._build_proxies(
             auto_limit, stats, raw_cap, call_timeout, allow_side_effects, session_id,
             allow_tainted,
         )
@@ -1806,10 +1817,13 @@ class CodeExecutor:
                     }
                 tag, body = msg
                 if tag == "call":
-                    req_id, py_server, tool_attr, kwargs, skill_name = body
+                    req_id, py_server, tool_attr, kwargs, skill_name, skill_side = body
                     token = active_skill.set(skill_name)
+                    # skill_side is set only by the child's skill-side proxies
+                    # (SHA-502); user code there reaches only the plain ones.
+                    side = skill_proxies if skill_side else proxies
                     try:
-                        wrapper = getattr(proxies[py_server], tool_attr)
+                        wrapper = getattr(side[py_server], tool_attr)
                         value = await wrapper(**kwargs)
                         parent_conn.send(("resp", (req_id, "ok", value)))
                     # Exception, не BaseException: CancelledError от общего

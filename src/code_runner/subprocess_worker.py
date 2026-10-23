@@ -48,7 +48,7 @@ from .executor import (
     make_safe_builtins,
 )
 from .restore import make_restore
-from .skills import SkillLoader, SkillsNamespace, active_skill
+from .skills import SKILL_SERVERS, SkillLoader, SkillsNamespace, active_skill
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
 # Env vars the child keeps; everything else (API keys, tokens, connection
@@ -118,15 +118,16 @@ class _RemoteProxy:
     """Stand-in for one MCP server: each tool becomes an async method that RPCs
     the real call back to the parent over the pipe."""
 
-    def __init__(self, py_name: str, tool_attrs: list[str], rpc) -> None:
+    def __init__(self, py_name: str, tool_attrs: list[str], rpc, skill_side: bool = False) -> None:
         self._py_name = py_name
         self._rpc = rpc
+        self._skill_side = skill_side
         for attr in tool_attrs:
             setattr(self, attr, self._make(attr))
 
     def _make(self, attr: str):
         async def call(**kwargs):
-            return await self._rpc(self._py_name, attr, kwargs)
+            return await self._rpc(self._py_name, attr, kwargs, self._skill_side)
         call.__name__ = attr
         return call
 
@@ -148,13 +149,21 @@ class _RpcBridge:
         self._lock = asyncio.Lock()
         self._counter = 0
 
-    async def __call__(self, py_server: str, tool_attr: str, kwargs: dict) -> Any:
+    async def __call__(
+        self, py_server: str, tool_attr: str, kwargs: dict, skill_side: bool,
+    ) -> Any:
         loop = asyncio.get_running_loop()
         async with self._lock:
             self._counter += 1
             req_id = self._counter
-            # active_skill rides along: the gate runs parent-side (SHA-465).
-            self._conn.send(("call", (req_id, py_server, tool_attr, kwargs, active_skill.get())))
+            # The gate runs parent-side (SHA-465). active_skill only shapes the
+            # refusal text; the pass comes from skill_side (SHA-502): user code
+            # here sets active_skill too while a skill runs, but never holds a
+            # skill-side proxy.
+            self._conn.send((
+                "call",
+                (req_id, py_server, tool_attr, kwargs, active_skill.get(), skill_side),
+            ))
             _tag, body = await loop.run_in_executor(None, self._conn.recv)
         # tag is always "resp" here; the parent never interleaves other tags
         # while a call is outstanding.
@@ -209,6 +218,10 @@ def _build_child_namespace(payload: dict, rpc: _RpcBridge) -> tuple[dict, set[st
         with contextlib.suppress(Exception):
             skills_ns = SkillsNamespace(SkillLoader(Path(skills_dir)).discover())
             skills_ns.bind("open", namespace["open"])
+            skills_ns.bind(SKILL_SERVERS, {
+                spec["py_name"]: _RemoteProxy(spec["py_name"], spec["tools"], rpc, skill_side=True)
+                for spec in payload.get("servers", [])
+            })
             namespace["skills"] = skills_ns
             namespace.update(_prelude.build(skills_ns))
 

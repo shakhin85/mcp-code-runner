@@ -116,6 +116,12 @@ matches (`restore.py`, SHA-482) — no downstream call is repeated.
   call whose string args (nested dicts/lists walked) share a substring of `TAINT_MIN_MATCH` = 20 chars with it
   raises `PermissionError` even under `allow_side_effects`; `allow_tainted=["server.tool" | "server.*"]` lifts it.
   Limits: a paraphrased/re-encoded copy or pieces <20 chars slip through; state does not cross `execute_code` calls.
+- **Skill-side proxies (SHA-502)** — skills get their own server proxies via the builtin `_cr_servers`
+  (`~/.claude/lib/skill_ns.py` resolves only from it, never from user frames). Only these let a `replaces:`
+  owner through the side-effect gate without `allow_side_effects`; user code never holds one.
+- **Secret gate (SHA-503)** — `secret_gate.py` loads the harness redactor (`CODE_RUNNER_REDACT_PATH`,
+  default `~/.claude/tools/secret-redact/redact.py`) and refuses a side-effecting call whose args carry a
+  secret. A skill-side call skips it only under explicit `allow_side_effects` (forgetful `redact=False` escape).
 
 ## Opt-in features
 
