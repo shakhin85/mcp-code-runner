@@ -75,8 +75,11 @@ _C_LEVEL_IMPORTS = frozenset({"time", "_strptime"})
 
 
 def _c_level_import(name, globals=None, locals=None, fromlist=(), level=0):
+    # PyImport_Import discards this return value and reads sys.modules, so
+    # the raw module never has to reach whoever holds this function.
     if level == 0 and name in _C_LEVEL_IMPORTS:
-        return builtins.__import__(name, globals, locals, fromlist, level)
+        builtins.__import__(name, globals, locals, fromlist, level)
+        return None
     raise ImportError(f"import of {name!r} is not allowed in sandbox")
 
 
