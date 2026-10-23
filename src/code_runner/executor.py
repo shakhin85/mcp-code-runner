@@ -1371,15 +1371,13 @@ class _ToolNamespace:
                 and f"{server}.*" not in allowed
             ):
                 skill = replacements.get(f"{server}.{gated}")
-                # SHA-499: the skill that declares `replaces:` for this tool
-                # is the sanctioned writer — it passes the side-effect gate.
-                # The taint check below still applies.
-                if not (skill and skill.split(".")[1] == active_skill.get()):
-                    hint = f"используй {skill}(...) вместо сырого вызова\n" if skill else ""
-                    raise PermissionError(
-                        f"{hint}{server}.{gated} is side-effecting; pass "
-                        f'allow_side_effects=["{server}.{gated}"] to execute_code'
-                    )
+                if skill and skill.split(".")[1] == active_skill.get():
+                    skill = None  # the call comes from that very skill
+                hint = f"используй {skill}(...) вместо сырого вызова\n" if skill else ""
+                raise PermissionError(
+                    f"{hint}{server}.{gated} is side-effecting; pass "
+                    f'allow_side_effects=["{server}.{gated}"] to execute_code'
+                )
             if taint is not None and _is_side_effecting(gated):
                 taint.check(server, gated, kwargs)
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
