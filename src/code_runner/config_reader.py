@@ -1,8 +1,9 @@
 """
-Reads Claude's ~/.claude.json and extracts MCP server configurations.
+Reads Claude Code's global config and extracts MCP server configurations.
 
 Supports:
-- Global servers from ~/.claude.json
+- Global servers from ~/.claude/.config.json (Claude Code ≥2.1.276),
+  falling back to ~/.claude.json when the former is absent
 - Project servers from .claude/settings.json AND .mcp.json
 - Auto-detection of project dir via CLAUDE_PROJECT_DIR env var
   or by walking the process tree on Linux (/proc)
@@ -29,7 +30,10 @@ class ServerConfig:
 
 
 def get_claude_config_path() -> Path:
-    return Path.home() / ".claude.json"
+    # Same file Claude Code reads: ~/.claude.json is only a rollback copy
+    # once ~/.claude/.config.json exists (SHA-492).
+    live = Path.home() / ".claude" / ".config.json"
+    return live if live.exists() else Path.home() / ".claude.json"
 
 
 def _detect_project_dir() -> Path:
@@ -131,7 +135,8 @@ def _parse_servers(
 
 def load_server_configs(skip_servers: set[str] | None = None) -> dict[str, ServerConfig]:
     """
-    Load MCP server configs from ~/.claude.json (global) and project configs.
+    Load MCP server configs from the global config (see get_claude_config_path)
+    and project configs.
 
     Global servers take priority — project servers only add new names.
     Project configs: .claude/settings.json + .mcp.json (both supported).

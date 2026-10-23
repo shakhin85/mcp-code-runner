@@ -29,9 +29,13 @@ Claude Code (любая сессия) ──HTTP──> :8030 (code-runner-proxy
 |---|---|
 | env демона | `~/.config/code-runner/code-runner.env` |
 | юниты | `~/.config/systemd/user/code-runner-{backend.service,proxy.service,proxy.socket}` |
-| клиентский конфиг | `~/.claude.json` → `mcpServers.code-runner = {"type": "http", "url": "http://127.0.0.1:8030/mcp"}` |
+| клиентский конфиг | `~/.claude/.config.json` (нет его — `~/.claude.json`) → `mcpServers.code-runner = {"type": "http", "url": "http://127.0.0.1:8030/mcp"}` |
 
-Ключевые env (клиентский `env` из `~/.claude.json` до демона НЕ доезжает —
+Глобальные downstream-серверы демон читает из того же файла, что Claude Code:
+`~/.claude/.config.json`, а без него — `~/.claude.json` (SHA-492). Сервер,
+добавленный в конфиг, демон видит после `systemctl --user restart code-runner-backend.service`.
+
+Ключевые env (клиентский `env` из конфига Claude Code до демона НЕ доезжает —
 всё через EnvironmentFile юнита):
 
 - `CODE_RUNNER_TRANSPORT=streamable-http` — включает HTTP-режим (`main()`

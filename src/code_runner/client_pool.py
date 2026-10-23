@@ -114,7 +114,7 @@ class MCPClientPool:
         """Connect to all configured MCP servers in parallel.
 
         configs: explicit server set (per-project pools in daemon mode);
-        default — read from ~/.claude.json + project configs.
+        default — read from the global config + project configs.
         """
         if configs is None:
             configs = load_server_configs(skip_servers)

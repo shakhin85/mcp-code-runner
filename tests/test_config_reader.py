@@ -105,3 +105,33 @@ def test_skip_servers_parameter(tmp_path, monkeypatch):
     result = load_server_configs(skip_servers={"skip-me"})
     assert "keep" in result
     assert "skip-me" not in result
+
+
+def test_global_config_prefers_dot_config_json(tmp_path, monkeypatch):
+    """Claude Code ≥2.1.276 keeps global mcpServers in ~/.claude/.config.json;
+    ~/.claude.json stays only as a rollback copy (SHA-492)."""
+    from code_runner.config_reader import get_claude_config_path
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".claude").mkdir()
+    live = tmp_path / ".claude" / ".config.json"
+    live.write_text(
+        json.dumps({"mcpServers": {"only-live": {"command": "echo"}}}), encoding="utf-8"
+    )
+    (tmp_path / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"only-legacy": {"command": "echo"}}}), encoding="utf-8"
+    )
+
+    assert get_claude_config_path() == live
+    result = load_server_configs()
+    assert "only-live" in result
+    assert "only-legacy" not in result
+
+
+def test_global_config_falls_back_to_claude_json(tmp_path, monkeypatch):
+    from code_runner.config_reader import get_claude_config_path
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".claude.json").write_text("{}", encoding="utf-8")
+
+    assert get_claude_config_path() == tmp_path / ".claude.json"
