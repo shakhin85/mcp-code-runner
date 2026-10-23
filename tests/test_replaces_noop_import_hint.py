@@ -158,8 +158,8 @@ def test_replaces_without_fn_names_skill_not_a_guessed_function(isolation, tmp_p
 
 
 @pytest.mark.parametrize("isolation", ISOLATIONS)
-def test_gate_error_from_inside_replacing_skill_has_no_skill_hint(isolation, tmp_path):
-    # SHA-465: the skill itself makes the raw call — advising it to use itself is noise.
+def test_replacing_skill_passes_gate_for_its_own_tool(isolation, tmp_path):
+    # SHA-499 (supersedes SHA-465): the skill that declares `replaces:` is the sanctioned writer.
     d = tmp_path / "thing_skill"
     d.mkdir()
     (d / "script.py").write_text(
@@ -173,8 +173,5 @@ def test_gate_error_from_inside_replacing_skill_has_no_skill_hint(isolation, tmp
     )
     skills = SkillsNamespace(SkillLoader(tmp_path).discover())
     result, session = _run(isolation, "await skills.thing_skill.thing(srv)", skills)
-    err = result["error"]
-    assert "PermissionError" in err, err
-    assert "используй" not in err, err
-    assert 'allow_side_effects=["srv.create_thing"]' in err, err
-    assert session.calls == []
+    assert result["success"], result["error"]
+    assert [c[0] for c in session.calls] == ["create_thing"]
