@@ -517,7 +517,9 @@ async def get_metrics(
         fix_line (first changed line, string literals masked, <=300 chars) —
         the source of the "HINT: в прошлый раз …" line on a repeated error.
       - "skill_call": one per `skills.<name>.<fn>` call (skill, fn, success,
-        duration_ms, session_id).
+        duration_ms, session_id). A failed call also carries `error`
+        ("<ExceptionClass>: <first message line>", <=200 chars); a successful
+        one has no `error` key.
 
     Args:
         since: ISO-8601 timestamp (e.g. "2026-04-17T10:00:00Z"); only events

@@ -186,6 +186,16 @@ active_skill: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 
 
+SKILL_ERROR_MAX = 200
+
+
+def _skill_error(exc: Exception) -> str:
+    """'<Class>: <first line of message>', capped at SKILL_ERROR_MAX chars (SHA-500)."""
+    lines = str(exc).strip().splitlines()
+    text = f"{type(exc).__name__}: {lines[0] if lines else ''}".rstrip(": ")
+    return text[:SKILL_ERROR_MAX]
+
+
 def _with_outcome(
     fn: Any,
     skill_dir: Path,
@@ -206,20 +216,23 @@ def _with_outcome(
     """
     is_async = inspect.iscoroutinefunction(fn)
 
-    def outcome(ok: bool, start: float) -> None:
+    def outcome(ok: bool, start: float, exc: Exception | None = None) -> None:
         if call_log is not None:
-            call_log.append({
+            event: dict[str, Any] = {
                 "skill": name, "fn": fn_name, "success": ok,
                 "duration_ms": round((time.monotonic() - start) * 1000, 2),
-            })
+            }
+            if exc is not None:
+                event["error"] = _skill_error(exc)
+            call_log.append(event)
         record_outcome(skill_dir, ok=ok)
 
     async def settle(coro: Any, start: float) -> Any:
         token = active_skill.set(name)
         try:
             result = await coro
-        except Exception:
-            outcome(False, start)
+        except Exception as exc:
+            outcome(False, start, exc)
             raise
         finally:
             active_skill.reset(token)
@@ -232,8 +245,8 @@ def _with_outcome(
         token = active_skill.set(name)
         try:
             result = fn(*args, **kwargs)
-        except Exception:
-            outcome(False, start)
+        except Exception as exc:
+            outcome(False, start, exc)
             raise
         finally:
             active_skill.reset(token)
