@@ -191,12 +191,23 @@ def test_nested_secret_refused(isolation, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("isolation", ISOLATIONS)
-def test_owner_skill_secret_not_refused_by_gate(isolation, tmp_path, monkeypatch):
-    # Skills scrub their own payloads (forgetful_create has redact=False as an
-    # explicit escape); the gate checks only calls from user code.
+def test_owner_skill_secret_refused_without_allow(isolation, tmp_path, monkeypatch):
+    # The owner's pass must not carry a secret: forgetful_create(redact=False)
+    # would otherwise ship one from user code with no allow at all.
     _trusted_owner(tmp_path)
     result, session = _run(
         isolation, tmp_path, f"await skills.owner.memory(content='{OPENAI_KEY}')", monkeypatch
+    )
+    assert "openai-key" in result["error"], result["error"]
+    assert session.calls == []
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_owner_skill_secret_escape_needs_allow(isolation, tmp_path, monkeypatch):
+    _trusted_owner(tmp_path)
+    result, session = _run(
+        isolation, tmp_path, f"await skills.owner.memory(content='{OPENAI_KEY}')", monkeypatch,
+        allow_side_effects=["forgetful.create_memory"],
     )
     assert result["success"], result["error"]
     assert session.calls == [("create_memory", {"content": OPENAI_KEY})]

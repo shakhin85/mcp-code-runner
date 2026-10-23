@@ -1373,11 +1373,8 @@ class _ToolNamespace:
             # of having been attempted.
             gated = _gated_name(tool_name, kwargs)
             side_effecting = _is_side_effecting(gated)
-            if (
-                side_effecting
-                and f"{server}.{gated}" not in allowed
-                and f"{server}.*" not in allowed
-            ):
+            explicit = f"{server}.{gated}" in allowed or f"{server}.*" in allowed
+            if side_effecting and not explicit:
                 skill = replacements.get(f"{server}.{gated}")
                 owner = skill is not None and skill.split(".")[1] == active_skill.get()
                 if not (owner and skill_side):
@@ -1395,9 +1392,11 @@ class _ToolNamespace:
                         f"{hint}{server}.{gated} is side-effecting; pass "
                         f'allow_side_effects=["{server}.{gated}"] to execute_code'
                     )
-            # SHA-503: skills scrub their own payloads (forgetful_create, with an
-            # explicit redact=False escape); user code calling a raw tool has none.
-            if side_effecting and not skill_side:
+            # SHA-503: every side-effecting call is scanned, the owner's pass
+            # included — otherwise user code reaches forgetful_create(redact=False)
+            # without any allow. A skill's escape needs allow_side_effects; user
+            # code calling a raw tool has none even then.
+            if side_effecting and not (skill_side and explicit):
                 secret_gate.check(server, gated, kwargs)
             if taint is not None and side_effecting:
                 taint.check(server, gated, kwargs)
