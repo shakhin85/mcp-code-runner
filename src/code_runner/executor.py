@@ -43,7 +43,13 @@ from mcp.types import Tool
 
 from . import prelude as _prelude
 from .config_reader import server_name_to_py
-from .metrics import MetricsRecorder, classify_error, code_fingerprint
+from .metrics import (
+    MetricsRecorder,
+    PastFixIndex,
+    classify_error,
+    code_fingerprint,
+    fix_fragment,
+)
 from .restore import make_restore, saved_output_name
 from .skills import SkillsNamespace, active_skill
 from .sql_limit import inject_limit
@@ -448,7 +454,7 @@ def _dialect_for_server(server_name: str) -> str | None:
 
 
 class _SessionState:
-    __slots__ = ("user_vars", "last_access", "blocks", "failed_block", "dropped")
+    __slots__ = ("user_vars", "last_access", "blocks", "failed_block", "dropped", "failed_code")
 
     def __init__(self) -> None:
         self.user_vars: dict[str, Any] = {}
@@ -459,6 +465,8 @@ class _SessionState:
         self.failed_block: tuple[int, int | None, frozenset[str]] | None = None
         # Имена, которые subprocess-child не смог сохранить (не пиклятся) — см. _dropped_var_hint.
         self.dropped: frozenset[str] = frozenset()
+        # Код последнего упавшего блока: следующий успешный пишет fix_line (SHA-483).
+        self.failed_code: str | None = None
 
 
 def _truncate_output(output: str, max_bytes: int, saved_as: int | None = None) -> str:
@@ -1436,6 +1444,7 @@ class CodeExecutor:
     ):
         self.pool = pool
         self.recorder = recorder
+        self._past_fix = PastFixIndex(recorder) if recorder is not None else None
         self.workspace = (
             workspace if workspace is not None else WorkspaceManager(DEFAULT_WORKSPACE_ROOT)
         )
@@ -1818,6 +1827,13 @@ class CodeExecutor:
                 names = _assigned_names(source)
                 if names:
                     state.failed_block = (block_no, line, names)
+            fix_line = None
+            if state is not None:
+                if success and state.failed_code is not None:
+                    fix_line = fix_fragment(state.failed_code, source) or None
+                state.failed_code = None if success else source
+            if not success and error and self._past_fix is not None:
+                error += self._past_fix.hint(error)
             error = _truncate_error(error, MAX_ERROR_BYTES)
             saved_as = None
             if (
@@ -1856,6 +1872,7 @@ class CodeExecutor:
                         "code_lines": code_lines,
                         "error": error,
                         "error_class": classify_error(error),
+                        "fix_line": fix_line,
                     })
                 except Exception:
                     pass

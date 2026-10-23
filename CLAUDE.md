@@ -18,6 +18,9 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
   `skill_call` events (one per `skills.<name>.<fn>` call, child calls included) feed
   `summarize_skills` behind `get_metrics(skills=True)`: calls, error %, last call per
   function and trim candidates (unused / failing, thresholds `SKILL_TRIM_*`, SHA-484).
+  `PastFixIndex` (SHA-483, lazy, cached by mtime/size) pairs an error (class + tool) with the
+  next successful block of the session (`fix_line`, literals masked, ≤300) and appends one
+  `HINT: в прошлый раз …` on a repeat; `summarize_errors` adds `repeat_error_share`.
 - `workspace.py` — injected `open()`: writes confined to `~/.cache/code-runner/workspace/<session_id>/` (relative paths), reads may also reach absolute paths under `CODE_RUNNER_READ_ROOTS` minus a secret deny-list. Text modes default to UTF-8.
 - `restore.py` — injected `restore(id, ...)`: lines or grep of a truncated block's full output (`out_<id>.txt`), built on the sandbox `open()`.
 - `skills.py` — discovers `~/.claude/code-runner-skills/<name>/`, exposes `skills.<name>.<fn>` proxy.
