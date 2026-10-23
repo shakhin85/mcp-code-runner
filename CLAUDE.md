@@ -97,8 +97,9 @@ the truncation footer names that file instead of advising a re-run.
   reach the child). An escape, OOM, or CPU loop is confined to a killable process, not the
   server. Persisted session vars must be picklable to cross the process boundary.
   Downstream credentials (pool configs, session headers) never reach the child, so
-  only subprocess keeps them out of user code: in-process, `str.format` resolves
-  `_`-attributes at runtime past the AST rule (SHA-122, xfail in tests).
+  subprocess keeps them out of user code by construction. In-process relies on the
+  AST rule plus a checked formatter: format strings resolve attributes at runtime, so
+  `x.format` / `x.format_map` and `string.Formatter` refuse `_`-fields (SHA-487).
   The child is at feature parity with the in-process path — skills, prelude aliases,
   workspace `open()`, and the error HINTs all work there; only the str-result HINT is
   applied parent-side, since it needs the run's tool-call stats.

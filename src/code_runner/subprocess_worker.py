@@ -35,11 +35,13 @@ from typing import Any
 
 from . import prelude as _prelude
 from .executor import (
+    _FORMAT_HOOK,
     _JSON_WRAPPED,
     _RESULT_SENTINEL,
     _SAFE_ASYNCIO_WRAPPED,
     _SAFE_MODULES_WRAPPED,
     SAFE_BUILTINS,
+    _format_attr,
     _format_user_traceback,
     _limit_error_hint,
     _name_error_hint,
@@ -177,6 +179,7 @@ def _build_child_namespace(payload: dict, rpc: _RpcBridge) -> tuple[dict, set[st
         "asyncio": _SAFE_ASYNCIO_WRAPPED,
         "json": _JSON_WRAPPED,
         **_SAFE_MODULES_WRAPPED,
+        _FORMAT_HOOK: _format_attr,
         "print": captured_print,
     }
 

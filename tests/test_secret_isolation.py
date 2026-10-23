@@ -1,4 +1,4 @@
-"""SHA-122: MCP server secrets must not be reachable from sandbox code.
+"""MCP server secrets must not be reachable from sandbox code.
 
 Proxies `<server>.*` share the namespace with user code. Under in-process
 isolation `srv._session` / `srv._caller` reached the live client session and
@@ -81,28 +81,44 @@ def test_namedtuple_api_still_allowed(isolation):
     assert result["success"] is True, result["error"]
 
 
+# SHA-487: a format string resolves `{0._x}` at runtime, past the AST rule.
 FORMAT_PROBES = [
     "print('{0._caller.configs}'.format(srv))",
+    "print('{s._caller.configs}'.format_map({'s': srv}))",
+    "print(str.format('{0._caller.configs}', srv))",
+    "f = '{0._caller.configs}'.format\nprint(f(srv))",
+    "print(list(map(str.format, ['{0._caller.configs}'], [srv])))",
     "print(string.Formatter().format('{0._session.headers}', srv))",
+    "print(string.Formatter().vformat('{0._session.headers}', (srv,), {}))",
+    "print(__cr_format_attr__(srv, '_caller').configs)",
 ]
 
 
-@pytest.mark.parametrize(
-    "isolation",
-    [
-        pytest.param(
-            "inprocess",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="AST filter is not a boundary: str.format resolves "
-                "attributes at runtime; only subprocess isolates secrets",
-            ),
-        ),
-        ISOLATIONS[1],
-    ],
-)
+@pytest.mark.parametrize("isolation", ISOLATIONS)
 @pytest.mark.parametrize("code", FORMAT_PROBES)
 def test_format_string_attribute_lookup(isolation, code):
     ex = CodeExecutor(_Pool(), isolation=isolation, mem_limit_mb=1024)
     result = asyncio.run(ex.execute(code, timeout=5))
     assert SECRET not in f"{result.get('output')}{result.get('error')}"
+    assert result["success"] is False
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+@pytest.mark.parametrize("field", ["{0._caller}", "{0.__class__}"])
+def test_format_private_field_refused(isolation, field):
+    ex = CodeExecutor(_Pool(), isolation=isolation, mem_limit_mb=1024)
+    result = asyncio.run(ex.execute(f"'{field}'.format(srv)", timeout=5))
+    assert "attribute is not allowed in a format field" in result["error"]
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_format_public_fields_still_work(isolation):
+    ex = CodeExecutor(_Pool(), isolation=isolation, mem_limit_mb=1024)
+    result = asyncio.run(ex.execute(
+        "print('{0} {a[x]} {b.real:>3} {0!r}'.format('p', a={'x': 2}, b=3),"
+        " '{k}'.format_map({'k': 4}), str.format('{}', 5),"
+        " string.Formatter().format('{0.imag}', 6), '{}'.format(7))",
+        timeout=5,
+    ))
+    assert result["success"] is True, result["error"]
+    assert result["output"].strip() == "p 2   3 'p' 4 5 0 7"

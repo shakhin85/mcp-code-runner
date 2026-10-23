@@ -3,6 +3,7 @@ Executes LLM-generated Python code with injected MCP tool wrappers.
 Includes AST validation, safe builtins, and auto-display of last expression.
 """
 
+import _string
 import ast
 import asyncio
 import base64
@@ -128,11 +129,12 @@ class _RestrictedModule:
     (belt-and-suspenders with the AST guard), except the harmless ``__name__``.
     """
 
-    __slots__ = ("_mod", "_name")
+    __slots__ = ("_mod", "_name", "_overrides")
 
-    def __init__(self, mod: types.ModuleType) -> None:
+    def __init__(self, mod: types.ModuleType, overrides: dict[str, Any] | None = None) -> None:
         object.__setattr__(self, "_mod", mod)
         object.__setattr__(self, "_name", getattr(mod, "__name__", "?"))
+        object.__setattr__(self, "_overrides", overrides or {})
 
     def __getattr__(self, attr: str) -> Any:
         # Only fires for names not in __slots__, so _mod/_name never recurse.
@@ -140,6 +142,8 @@ class _RestrictedModule:
             raise AttributeError(
                 f"dunder attribute '{self._name}.{attr}' is blocked in the sandbox"
             )
+        if attr in self._overrides:
+            return self._overrides[attr]
         value = getattr(self._mod, attr)
         if isinstance(value, types.ModuleType):
             raise AttributeError(
@@ -152,10 +156,81 @@ class _RestrictedModule:
         return f"<sandboxed module '{self._name}'>"
 
 
+def _check_format_field(field_name: str) -> None:
+    """Refuse `{0._x}` / `{0.__class__}` in a format string (SHA-487).
+
+    A format string resolves attributes at runtime, so the AST rule on
+    `_`-attributes never sees them; under in-process isolation
+    `'{0._caller.configs}'.format(srv)` read downstream credentials."""
+    _first, rest = _string.formatter_field_name_split(field_name)
+    for is_attr, key in rest:
+        if (
+            is_attr
+            and key.startswith("_")
+            and key not in _ALLOWED_PRIVATE_ATTRS
+            and key not in ALLOWED_DUNDER_ATTRS
+        ):
+            raise ValueError(
+                f"`_`-attribute is not allowed in a format field: {key}"
+            )
+
+
+class _FieldCheckingFormatter(string.Formatter):
+    def get_field(self, field_name, args, kwargs):
+        _check_format_field(field_name)
+        return super().get_field(field_name, args, kwargs)
+
+
+_CHECKED_FORMATTER = _FieldCheckingFormatter()
+
+
+def _safe_str_format(format_string: str, /, *args: Any, **kwargs: Any) -> str:
+    return _CHECKED_FORMATTER.vformat(format_string, args, kwargs)
+
+
+def _safe_str_format_map(format_string: str, mapping: Any, /) -> str:
+    return _CHECKED_FORMATTER.vformat(format_string, (), mapping)
+
+
+_SAFE_STR_METHODS = {"format": _safe_str_format, "format_map": _safe_str_format_map}
+
+
+class _SandboxFormatter:
+    """`string.Formatter` as sandbox code sees it. Delegates instead of
+    subclassing, so `string.Formatter.mro()` can't hand back the unchecked base."""
+
+    def format(self, format_string: str, /, *args: Any, **kwargs: Any) -> str:
+        return _CHECKED_FORMATTER.vformat(format_string, args, kwargs)
+
+    def vformat(self, format_string: str, args: Any, kwargs: Any) -> str:
+        return _CHECKED_FORMATTER.vformat(format_string, args, kwargs)
+
+    def parse(self, format_string: str):
+        return _CHECKED_FORMATTER.parse(format_string)
+
+
+def _format_attr(obj: Any, name: str) -> Any:
+    """Target of every `<expr>.format` / `<expr>.format_map` load in user code
+    (_rewrite_format_attrs). `str` methods are C code that `getattr` past any
+    Python-level check, so for a str (or the str type) the checked formatter
+    stands in; any other object gets its own attribute. The hook is a plain
+    name in the namespace, so `name` is pinned or it would be a getattr."""
+    if name not in _SAFE_STR_METHODS:
+        raise AttributeError(f"{_FORMAT_HOOK} only resolves format/format_map")
+    if isinstance(obj, str):
+        return functools.partial(_SAFE_STR_METHODS[name], obj)
+    if isinstance(obj, type) and issubclass(obj, str):
+        return _SAFE_STR_METHODS[name]
+    return getattr(obj, name)
+
+
 # Built once at import — the wrappers are stateless, so a single instance per
 # module is shared across all sandbox namespaces. Used in _build_namespace.
 _SAFE_MODULES_WRAPPED: dict[str, _RestrictedModule] = {
-    name: _RestrictedModule(mod) for name, mod in SAFE_MODULES.items()
+    name: _RestrictedModule(
+        mod, {"Formatter": _SandboxFormatter} if mod is string else None
+    )
+    for name, mod in SAFE_MODULES.items()
 }
 _SAFE_ASYNCIO_WRAPPED = _RestrictedModule(_SAFE_ASYNCIO)
 _JSON_WRAPPED = _RestrictedModule(json)
@@ -640,6 +715,38 @@ def _rewrite_noop_imports(code: str) -> str:
     return ast.unparse(tree)
 
 
+_FORMAT_ATTRS = frozenset(_SAFE_STR_METHODS)
+_FORMAT_HOOK = "__cr_format_attr__"
+
+
+class _FormatAttrRewriter(ast.NodeTransformer):
+    def visit_Attribute(self, node: ast.Attribute):
+        self.generic_visit(node)
+        if node.attr not in _FORMAT_ATTRS or not isinstance(node.ctx, ast.Load):
+            return node
+        call = ast.Call(
+            func=ast.Name(id=_FORMAT_HOOK, ctx=ast.Load()),
+            args=[node.value, ast.Constant(node.attr)],
+            keywords=[],
+        )
+        return ast.copy_location(call, node)
+
+
+def _rewrite_format_attrs(code: str) -> str:
+    """Route `x.format` / `x.format_map` through _format_attr (SHA-487)."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+    if not any(
+        isinstance(n, ast.Attribute) and n.attr in _FORMAT_ATTRS for n in ast.walk(tree)
+    ):
+        return code
+    tree = _FormatAttrRewriter().visit(tree)
+    ast.fix_missing_locations(tree)
+    return ast.unparse(tree)
+
+
 def validate_code(code: str) -> None:
     """Validate user code AST. Raises ValueError if dangerous constructs found."""
     try:
@@ -687,7 +794,7 @@ def validate_code(code: str) -> None:
                 f"dunder attribute access is not allowed: {node.attr}"
             )
 
-        # SHA-122: private attributes reach framework state — under in-process
+        # Private attributes reach framework state — under in-process
         # isolation `srv._caller.configs` / `srv._session.headers` exposed
         # downstream auth headers and env tokens. namedtuple's public API is
         # the one `_`-prefixed surface sandbox code legitimately needs.
@@ -1390,6 +1497,7 @@ class CodeExecutor:
             "asyncio": _SAFE_ASYNCIO_WRAPPED,
             "json": _JSON_WRAPPED,
             **_SAFE_MODULES_WRAPPED,
+            _FORMAT_HOOK: _format_attr,
         }
 
         # Workspace-bound open(): when session_id is set, writes go into
@@ -1707,7 +1815,7 @@ class CodeExecutor:
         except ValueError as e:
             return finalize(False, "", str(e))
 
-        code = _transform_last_expr(_rewrite_noop_imports(code))
+        code = _transform_last_expr(_rewrite_format_attrs(_rewrite_noop_imports(code)))
 
         # Subprocess isolation path: run in a fresh rlimited child. finalize()
         # (truncation, error cap, cost footer, metrics) and stats — populated by
