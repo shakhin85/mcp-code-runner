@@ -85,6 +85,9 @@ the truncation footer names that file instead of advising a re-run.
   is wrapped in a `_RestrictedModule` that refuses module-typed attributes. The exception
   field is truncated (`MAX_ERROR_BYTES`) like the output, so a raised error can't be a
   context bomb.
+- Error text of a downstream `isError` result is fenced in `<untrusted_tool_error>`
+  inside the `MCPToolError` message (SHA-480), so it stays marked whether it surfaces
+  in `error` or via `print(e)`; a closing tag inside the payload is defanged.
 - **Subprocess isolation** (default; `CODE_RUNNER_ISOLATION=inprocess` opts out) is the real
   containment: user code runs in a per-call child with `RLIMIT_AS`/`RLIMIT_CPU`/`RLIMIT_FSIZE`
   and a scrubbed environment; MCP calls are proxied back to the parent (live sessions never
