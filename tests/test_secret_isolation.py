@@ -49,6 +49,14 @@ PROBES = [
     "print(vars(srv))",
     "print(getattr(srv, '_caller'))",
     "print(globals())",
+    # __match_args__ turns a positional class pattern into getattr by string
+    "M = type('M', (type,), {'__instancecheck__': lambda c, o: True})\n"
+    "X = M('X', (), {'__match_args__': ('_caller',)})\n"
+    "match srv:\n    case X(c):\n        print(c.configs)",
+    "M = dataclasses.make_dataclass('M', [], bases=(type,), init=False,"
+    " namespace={'__instancecheck__': lambda c, o: True})\n"
+    "X = M('X', (), {'__match_args__': ('_caller',)})\n"
+    "match srv:\n    case X(c):\n        print(c.configs)",
 ]
 
 
@@ -75,6 +83,7 @@ def test_private_attribute_refused_by_validator(isolation):
         "match 1:\n    case int(_caller=c):\n        pass",
         "match 1:\n    case int(__class__=c):\n        pass",
         "match '':\n    case str(format=f):\n        pass",
+        "match 1:\n    case int(x):\n        pass",
     ],
 )
 def test_class_pattern_attribute_refused(code):

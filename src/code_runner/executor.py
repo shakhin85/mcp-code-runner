@@ -791,7 +791,15 @@ def validate_code(code: str) -> None:
 
         # `case C(attr=x)` is a getattr too, and _rewrite_format_attrs never
         # sees it, so `case str(format=f)` would hand out the raw method.
+        # `case C(x)` reads the attribute named in C.__match_args__ — a string
+        # the AST never sees, and three-argument type() sets it to anything.
         if isinstance(node, ast.MatchClass):
+            if node.patterns:
+                raise ValueError(
+                    "positional sub-patterns in a class pattern are not allowed "
+                    "(they read attributes named by __match_args__) — "
+                    "use `case C() as x` or `case C(attr=x)`"
+                )
             for attr in node.kwd_attrs:
                 _check_attr_name(attr)
                 if attr in _FORMAT_ATTRS:
