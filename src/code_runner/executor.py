@@ -411,7 +411,7 @@ def _fmt_bytes(n: int) -> str:
     return f"{n / (1024 * 1024):.1f}MB"
 
 
-def _append_cost_footer(output: str, stats: dict[str, int], elapsed_ms: float) -> str:
+def _append_cost_footer(output: str, stats: dict[str, Any], elapsed_ms: float) -> str:
     """Append a one-line cost receipt when the run actually called MCP tools.
 
     The whole point of running code here is that raw tool output stays in the
@@ -446,7 +446,7 @@ def _append_cost_footer(output: str, stats: dict[str, int], elapsed_ms: float) -
     return f"{output}\n{line}" if output else line
 
 
-def _quiet_failure_warnings(stats: dict[str, int]) -> list[str]:
+def _quiet_failure_warnings(stats: dict[str, Any]) -> list[str]:
     """Name the results that look valid but may not be.
 
     An exception is noticed; a plausible-but-wrong result mostly is not
@@ -465,6 +465,8 @@ def _quiet_failure_warnings(stats: dict[str, int]) -> list[str]:
         n = stats.get(key, 0)
         if n:
             out.append(f"{n} call{'s' if n != 1 else ''} {label}")
+            if key == "raw_capped" and stats.get("raw_capped_calls"):
+                out[-1] += f" ({_raw_cap_details(stats['raw_capped_calls'])})"
     return out
 
 
@@ -751,7 +753,7 @@ _STR_RESULT_HINT = (
 )
 
 
-def _str_result_hint(exc: "BaseException | str", stats: dict[str, int]) -> str:
+def _str_result_hint(exc: "BaseException | str", stats: dict[str, Any]) -> str:
     """Append a footgun hint iff a subscript error coincides with a str tool result.
 
     Fires only when both signals are present in the same run, so it never adds
@@ -762,9 +764,25 @@ def _str_result_hint(exc: "BaseException | str", stats: dict[str, int]) -> str:
     if stats.get("str_results", 0) <= 0:
         return ""
     msg = str(exc)
-    if any(marker in msg for marker in _SUBSCRIPT_ERROR_MARKERS):
+    if not any(marker in msg for marker in _SUBSCRIPT_ERROR_MARKERS):
+        return ""
+    capped = stats.get("raw_capped_calls")
+    if not capped:
         return _STR_RESULT_HINT
-    return ""
+    return (
+        "\n\nHINT: a tool result this run exceeded raw_cap and was returned as a "
+        f"TRUNCATED STRING, not parsed into dict/list: {_raw_cap_details(capped)}. "
+        "Indexing it like an object raises this error. Either narrow the query "
+        "(columns, aggregate, LIMIT) or re-run with a larger raw_cap."
+    )
+
+
+def _raw_cap_details(capped: list[tuple[str, int, int]]) -> str:
+    """`pg.execute_sql returned 1520000 B (1.4MB), raw_cap=262144` per capped call."""
+    return "; ".join(
+        f"{call} returned {size} B ({_fmt_bytes(size)}), raw_cap={cap}"
+        for call, size, cap in capped
+    )
 
 
 # CPython names the function but never its accepted parameters, so a caller who
@@ -1026,7 +1044,7 @@ class _ToolNamespace:
         session: ClientSession,
         tools: list[Tool],
         auto_limit: int = 0,
-        stats: dict[str, int] | None = None,
+        stats: dict[str, Any] | None = None,
         recorder: "MetricsRecorder | None" = None,
         raw_cap: int = 0,
         pool: "_ToolCaller | None" = None,
@@ -1152,6 +1170,9 @@ class _ToolNamespace:
                     if self._stats is not None:
                         self._stats["str_results"] += 1
                         self._stats["raw_capped"] = self._stats.get("raw_capped", 0) + 1
+                        self._stats.setdefault("raw_capped_calls", []).append(
+                            (f"{server}.{tool_name}", out_bytes, raw_cap)
+                        )
                     kept = combined.encode("utf-8")[:raw_cap].decode("utf-8", errors="ignore")
                     return (
                         kept
@@ -1297,7 +1318,7 @@ class CodeExecutor:
     def _build_proxies(
         self,
         auto_limit: int,
-        stats: dict[str, int] | None,
+        stats: dict[str, Any] | None,
         raw_cap: int,
         call_timeout: float,
         allow_side_effects: list[str] | None = None,
@@ -1355,7 +1376,7 @@ class CodeExecutor:
         self,
         session_id: str | None = None,
         auto_limit: int = 0,
-        stats: dict[str, int] | None = None,
+        stats: dict[str, Any] | None = None,
         raw_cap: int = 0,
         call_timeout: float = 0,
         allow_side_effects: list[str] | None = None,
@@ -1440,7 +1461,7 @@ class CodeExecutor:
         timeout: float,
         auto_limit: int,
         raw_cap: int,
-        stats: dict[str, int],
+        stats: dict[str, Any],
         call_timeout: float,
         allow_side_effects: list[str] | None = None,
     ) -> tuple[bool, str, str | None, list[dict[str, Any]]]:
@@ -1602,7 +1623,7 @@ class CodeExecutor:
         # rewrites it — identical snippets must hash identically across calls.
         code_sha = code_fingerprint(code)
         code_lines = code.count("\n") + 1
-        stats: dict[str, int] = {
+        stats: dict[str, Any] = {
             "tool_calls": 0, "auto_limit_hits": 0, "str_results": 0, "raw_tool_bytes": 0,
         }
         source = code
