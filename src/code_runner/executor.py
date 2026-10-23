@@ -111,6 +111,14 @@ ALLOWED_DUNDER_ATTRS = frozenset({"__name__"})
 _ALLOWED_PRIVATE_ATTRS = frozenset(
     {"_asdict", "_replace", "_fields", "_field_defaults", "_make"}
 )
+# Frame/code introspection — no underscore, so the rules above never saw it:
+# `gen.gi_frame.f_back...f_globals` reached module globals holding os/builtins
+# (SHA-491). Code objects are only reachable through these, so `co_*` needs no entry.
+_FRAME_ATTRS = frozenset({
+    "gi_frame", "gi_code", "cr_frame", "cr_code", "ag_frame", "ag_code",
+    "tb_frame", "tb_next", "f_back", "f_globals", "f_locals", "f_builtins",
+    "f_code", "f_generator",
+})
 
 SAFE_MODULES = {
     "re": re,
@@ -186,6 +194,8 @@ def _check_format_field(field_name: str) -> None:
     `'{0._caller.configs}'.format(srv)` read downstream credentials."""
     _first, rest = _string.formatter_field_name_split(field_name)
     for is_attr, key in rest:
+        if is_attr and key in _FRAME_ATTRS:
+            raise ValueError(f"frame/code attribute is not allowed in a format field: {key}")
         if (
             is_attr
             and key.startswith("_")
@@ -838,6 +848,12 @@ def validate_code(code: str) -> None:
 def _check_attr_name(attr: str) -> None:
     if attr.startswith("__") and attr.endswith("__") and attr not in ALLOWED_DUNDER_ATTRS:
         raise ValueError(f"dunder attribute access is not allowed: {attr}")
+
+    if attr in _FRAME_ATTRS:
+        raise ValueError(
+            f"frame/code attribute access is not allowed: {attr} — "
+            "frames reach module globals outside the sandbox"
+        )
 
     # Private attributes reach framework state — under in-process
     # isolation `srv._caller.configs` / `srv._session.headers` exposed
