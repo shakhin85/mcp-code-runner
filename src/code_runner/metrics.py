@@ -411,9 +411,10 @@ class MetricsRecorder:
 
         since: ISO-8601 string — keep only events with ts >= since.
         server: match event["server"] exactly.
-        kind: match event["kind"] exactly (a tuple matches any of its members).
+        kind: match event["kind"] exactly (a tuple matches any of its members);
+            an empty string means no filter, as None does.
         """
-        kinds = (kind,) if isinstance(kind, str) else kind
+        kinds = tuple(k for k in ((kind,) if isinstance(kind, str) else kind or ()) if k)
         events: list[dict[str, Any]] = []
         for p in self._iter_files_chronological():
             try:

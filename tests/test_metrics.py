@@ -87,6 +87,14 @@ class TestMetricsRecorder:
         events = rec.read(kind="tool_call")
         assert [e["n"] for e in events] == [0, 2]
 
+    def test_read_empty_kind_is_no_filter(self, tmp_path):
+        # An MCP client may send "" instead of null for get_metrics(kind=...).
+        rec = MetricsRecorder(tmp_path / "m.jsonl", stderr=False)
+        rec.record({"kind": "tool_call", "n": 0})
+        rec.record({"kind": "execute_code", "n": 1})
+        assert [e["n"] for e in rec.read(kind="")] == [0, 1]
+        assert [e["n"] for e in rec.read(kind=("tool_call", ""))] == [0]
+
     def test_read_filters_by_server(self, tmp_path):
         rec = MetricsRecorder(tmp_path / "m.jsonl", stderr=False)
         rec.record({"kind": "tool_call", "server": "mssql", "n": 0})
