@@ -461,7 +461,12 @@ async def execute_code(
             `PermissionError` naming the exact entry to pass here — since a
             sandboxed `await server.tool(...)` call bypasses the approval
             hooks that gate direct MCP calls. Use "<server>.*" to allow every
-            side-effecting tool on one server. Omit for read-only code.
+            side-effecting tool on one server. A ":N" suffix ("srv.tool:N",
+            "srv.*:N" — one counter for the server) caps that entry at N calls
+            per execute_code. With session_id, a refused call repeated under
+            the same permissions is refused at once, prefixed "повтор отказа:"
+            — change the call or the permissions instead of retrying. Omit for
+            read-only code.
         allow_tainted: Same forms as allow_side_effects ("server.tool",
             "server.*"). Text returned by an untrusted server (web, mail,
             social; env CODE_RUNNER_UNTRUSTED_SERVERS) is tracked within the

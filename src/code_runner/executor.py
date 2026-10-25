@@ -351,6 +351,81 @@ def _gated_name(tool_name: str, kwargs: dict) -> str:
     return str(kwargs.get(arg, tool_name)) if arg else tool_name
 
 
+REPEAT_PREFIX = "повтор отказа: "
+
+
+class SideEffectGate:
+    """SHA-524: allow_side_effects of one execute_code. An entry may carry a
+    run budget — "srv.tool:N", or "srv.*:N" for one counter shared by the
+    server's tools. A gate refusal (deny-by-default, secret) depends only on
+    the call and the permissions, so the session remembers its fingerprint:
+    the same call under the same permissions is refused again at once,
+    marked as a repeat. Budget and taint refusals are run-level and are not
+    remembered — the next run may legitimately pass."""
+
+    def __init__(
+        self,
+        entries: list[str] | None,
+        refused: dict[str, tuple[str, str]] | None = None,
+        allow_tainted: list[str] | None = None,
+    ):
+        self.allowed: set[str] = set()
+        self._budget: dict[str, int] = {}
+        self._used: collections.Counter[str] = collections.Counter()
+        for entry in entries or []:
+            name, sep, n = entry.rpartition(":")
+            if not sep:
+                self.allowed.add(entry)
+                continue
+            if not (n.isdigit() and int(n) > 0):
+                raise ValueError(
+                    f"allow_side_effects: {entry!r} — после ':' ждём целое > 0"
+                )
+            self.allowed.add(name)
+            self._budget[name] = int(n)
+        self._refused = refused
+        self._perms = json.dumps(
+            [sorted(entries or []), sorted(allow_tainted or [])], ensure_ascii=False
+        )
+
+    def entry(self, server: str, tool: str) -> str | None:
+        """The allow entry covering server.tool, or None."""
+        for key in (f"{server}.{tool}", f"{server}.*"):
+            if key in self.allowed:
+                return key
+        return None
+
+    def spend(self, key: str) -> None:
+        budget = self._budget.get(key)
+        if budget is None:
+            return
+        if self._used[key] >= budget:
+            raise PermissionError(
+                f"{key}: бюджет {budget} вызовов за execute_code исчерпан; "
+                f'подними его: allow_side_effects=["{key}:<N>"]'
+            )
+        self._used[key] += 1
+
+    @staticmethod
+    def fingerprint(server: str, tool: str, kwargs: dict, caller: tuple) -> str:
+        """caller — (skill_side, active skill): the same call is refused to user
+        code and let through for the skill-side owner, so they never share one."""
+        blob = json.dumps(
+            [f"{server}.{tool}", kwargs, caller],
+            sort_keys=True, ensure_ascii=False, default=str,
+        )
+        return hashlib.sha256(blob.encode()).hexdigest()
+
+    def check_repeat(self, fp: str) -> None:
+        hit = self._refused.get(fp) if self._refused is not None else None
+        if hit is not None and hit[0] == self._perms:
+            raise PermissionError(REPEAT_PREFIX + hit[1])
+
+    def remember(self, fp: str, message: str) -> None:
+        if self._refused is not None:
+            self._refused[fp] = (self._perms, message)
+
+
 # SHA-481: run-level taint. Text returned by an untrusted server (web, mail,
 # social) is remembered for the duration of one execute_code; a side-effecting
 # call whose string arguments share a substring of TAINT_MIN_MATCH+ chars with
@@ -528,7 +603,10 @@ def _dialect_for_server(server_name: str) -> str | None:
 
 
 class _SessionState:
-    __slots__ = ("user_vars", "last_access", "blocks", "failed_block", "dropped", "failed_code")
+    __slots__ = (
+        "user_vars", "last_access", "blocks", "failed_block", "dropped", "failed_code",
+        "refused",
+    )
 
     def __init__(self) -> None:
         self.user_vars: dict[str, Any] = {}
@@ -541,6 +619,8 @@ class _SessionState:
         self.dropped: frozenset[str] = frozenset()
         # Код последнего упавшего блока: следующий успешный пишет fix_line (SHA-483).
         self.failed_code: str | None = None
+        # Отпечатки отказов гейта → (разрешения, текст отказа) — см. SideEffectGate (SHA-524).
+        self.refused: dict[str, tuple[str, str]] = {}
 
 
 def _truncate_output(output: str, max_bytes: int, saved_as: int | None = None) -> str:
@@ -1302,7 +1382,7 @@ class _ToolNamespace:
         raw_cap: int = 0,
         pool: "_ToolCaller | None" = None,
         call_timeout: float = 0,
-        allowed_side_effects: list[str] | None = None,
+        side_effects: SideEffectGate | None = None,
         journal: Path | None = None,
         replacements: dict[str, str] | None = None,
         taint: TaintGate | None = None,
@@ -1322,7 +1402,7 @@ class _ToolNamespace:
         self._recorder = recorder
         self._raw_cap = raw_cap
         self._call_timeout = call_timeout
-        self._allowed_side_effects = set(allowed_side_effects or [])
+        self._gate = side_effects or SideEffectGate(None)
         self._journal = journal
         self._replacements = replacements or {}
         # Вызовы идут через пул, а не через захваченную при сборке сессию:
@@ -1361,7 +1441,7 @@ class _ToolNamespace:
         raw_cap = self._raw_cap
         caller = self._caller
         call_timeout = self._call_timeout
-        allowed = self._allowed_side_effects
+        gate = self._gate
         replacements = self._replacements
         taint = self._taint
         skill_side = self._skill_side
@@ -1373,33 +1453,52 @@ class _ToolNamespace:
             # of having been attempted.
             gated = _gated_name(tool_name, kwargs)
             side_effecting = _is_side_effecting(gated)
-            explicit = f"{server}.{gated}" in allowed or f"{server}.*" in allowed
-            if side_effecting and not explicit:
-                skill = replacements.get(f"{server}.{gated}")
-                owner = skill is not None and skill.split(".")[1] == active_skill.get()
-                if not (owner and skill_side):
-                    # An owner holding the user's proxy (a passed-in client) is
-                    # refused like user code; advising it to use itself is noise.
-                    hint = (
-                        f"skills.{active_skill.get()} вызывает {server}.{gated} через "
-                        f"proxy пользователя: скилл берёт сервер из {SKILL_SERVERS} "
-                        "(~/.claude/lib/skill_ns.py)\n"
-                        if owner
-                        else f"используй {skill}(...) вместо сырого вызова\n" if skill
-                        else ""
-                    )
-                    raise PermissionError(
-                        f"{hint}{server}.{gated} is side-effecting; pass "
-                        f'allow_side_effects=["{server}.{gated}"] to execute_code'
-                    )
-            # SHA-503: every side-effecting call is scanned, the owner's pass
-            # included — otherwise user code reaches forgetful_create(redact=False)
-            # without any allow. A skill's escape needs allow_side_effects; user
-            # code calling a raw tool has none even then.
-            if side_effecting and not (skill_side and explicit):
-                secret_gate.check(server, gated, kwargs)
-            if taint is not None and side_effecting:
-                taint.check(server, gated, kwargs)
+            if side_effecting:
+                entry = gate.entry(server, gated)
+                # SHA-524: a refusal already given under these permissions is
+                # repeated at once — no secret scan, no taint walk.
+                fp = gate.fingerprint(
+                    server, gated, kwargs, (skill_side, active_skill.get())
+                )
+                gate.check_repeat(fp)
+                try:
+                    if entry is None:
+                        skill = replacements.get(f"{server}.{gated}")
+                        owner = (
+                            skill is not None
+                            and skill.split(".")[1] == active_skill.get()
+                        )
+                        if not (owner and skill_side):
+                            # An owner holding the user's proxy (a passed-in client)
+                            # is refused like user code; advising it to use itself
+                            # is noise.
+                            hint = (
+                                f"skills.{active_skill.get()} вызывает {server}.{gated} "
+                                f"через proxy пользователя: скилл берёт сервер из "
+                                f"{SKILL_SERVERS} (~/.claude/lib/skill_ns.py)\n"
+                                if owner
+                                else f"используй {skill}(...) вместо сырого вызова\n"
+                                if skill
+                                else ""
+                            )
+                            raise PermissionError(
+                                f"{hint}{server}.{gated} is side-effecting; pass "
+                                f'allow_side_effects=["{server}.{gated}"] to execute_code'
+                            )
+                    # SHA-503: every side-effecting call is scanned, the owner's
+                    # pass included — otherwise user code reaches
+                    # forgetful_create(redact=False) without any allow. A skill's
+                    # escape needs allow_side_effects; user code calling a raw tool
+                    # has none even then.
+                    if not (skill_side and entry is not None):
+                        secret_gate.check(server, gated, kwargs)
+                except PermissionError as e:
+                    gate.remember(fp, str(e))
+                    raise
+                if taint is not None:
+                    taint.check(server, gated, kwargs)
+                if entry is not None:
+                    gate.spend(entry)
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
             if limit_applied and self._stats is not None:
                 self._stats["auto_limit_hits"] += 1
@@ -1617,6 +1716,11 @@ class CodeExecutor:
                 journal = self.workspace.resolve_path(session_id, JOURNAL_NAME)
         replacements = getattr(self.skills, "replacements", None)
         taint = TaintGate(allow_tainted)
+        refused = (
+            self._get_or_create_session(session_id).refused
+            if session_id is not None else None
+        )
+        gate = SideEffectGate(allow_side_effects, refused, allow_tainted)
         proxies: dict[str, _ToolNamespace] = {}
         skill_proxies: dict[str, _ToolNamespace] = {}
 
@@ -1631,7 +1735,7 @@ class CodeExecutor:
                     raw_cap=raw_cap,
                     pool=pool,
                     call_timeout=call_timeout,
-                    allowed_side_effects=allow_side_effects,
+                    side_effects=gate,
                     journal=journal,
                     replacements=replacements,
                     taint=taint,
