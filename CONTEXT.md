@@ -1,18 +1,18 @@
-# Task: updated_code_runner
+# Task: dual-graph-transport
 
 **Status:** in_progress
-**Done means:** docs/arxiv-ветка влита в master; SHA-524 (бюджет side-effects + отпечаток отказа) реализован в code-runner, тесты зелёные
+**Done means:** Незакоммиченное в code-runner и ~/.claude разобрано: закоммичено или явно оставлено с причиной
 **Linear:** —
-**Updated:** 2026-10-25T10:09:21.020142+00:00
+**Updated:** 2026-10-25T14:13:46.389403+00:00
 
 ## Steps
-- [x] 5/5 done — latest: SHA-508 redact FP + тесты [evidence: ~/.claude 8896e08: test_redact+test_wrappers 71 passed, ruff ok, code-runner 592 passed; security review учтён], feat(step-close-gate): коммит без связанного шага → автозапись step add+done; репо из git -C/cd, фильтр по началу хода (.claude 3b283a7) [evidence: git -C /home/linux_admin/.claude log -1 3b283a7 → коммит этого хода (автозапись step-close-gate)], Merge branch 'hr/coder-57b93f78' (.claude 9b30c32) [evidence: git -C /home/linux_admin/.claude log -1 9b30c32 → коммит этого хода (автозапись step-close-gate)] (+2 earlier)
+- [x] 1/1 done — latest: rm-recursive-gate: scratchpad через hostos — на Windows падал на os.getuid и блокировал любой rm -r (.claude 2122c24) [evidence: git -C C:/Users/shalnazarov/.claude log -1 2122c24 → коммит этого хода (автозапись step-close-gate)]
 
 ## Checkpoint
-—
+core.hooksPath=tools/git-hooks включён в ~/.claude; canary: promote dangerous-commands+herdr-route-pipe (--force), в тени unreviewed-merge+child-context-handoff; pre-commit 0 errors (предложение агента)
 
 ## Next
-—
+миграция долга invariant_15 партиями (coder) (предложение агента)
 
 ## Refs
 - episodes: —

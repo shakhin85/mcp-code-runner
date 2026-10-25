@@ -15,12 +15,24 @@ A skill without `status.json` is not enrolled and is not counted.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock_exclusive(fh) -> None:
+        """Blocking exclusive lock on the first byte; Windows has no flock."""
+        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+else:
+    import fcntl
+
+    def _lock_exclusive(fh) -> None:
+        fcntl.flock(fh, fcntl.LOCK_EX)
 
 SUCCESS_RATE_THRESHOLD = 0.8
 MIN_USES_FOR_DEMOTION = 5
@@ -50,7 +62,7 @@ def record_outcome(skill_dir: Path, ok: bool) -> None:
     if not path.exists():
         return
     with open(skill_dir / f"{STATUS_FILE}.lock", "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        _lock_exclusive(lock)
         status = json.loads(path.read_text(encoding="utf-8"))
         status["uses"] = status.get("uses", 0) + 1
         status["successes"] = status.get("successes", 0) + int(ok)
