@@ -48,7 +48,7 @@ from .executor import (
     make_safe_builtins,
 )
 from .restore import make_restore
-from .skills import SKILL_SERVERS, SkillLoader, SkillsNamespace, active_skill
+from .skills import SKILL_SERVERS, SkillLoader, SkillsNamespace, active_skill, mark_fatal
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
 # Env vars the child keeps; everything else (API keys, tokens, connection
@@ -317,6 +317,7 @@ async def _exec_user_code(
         # Same HINT set as the in-process path — they need the live exception,
         # which only exists here. The str-result hint is the exception: it needs
         # the parent's per-run stats, so the parent appends that one.
+        mark_fatal(e)
         return {
             "success": False,
             "output": "".join(output_lines),

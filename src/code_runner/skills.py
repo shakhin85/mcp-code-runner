@@ -220,6 +220,9 @@ def _with_outcome(
                 # Class name only: the message may hold a secret or untrusted text
                 # and the repo has no redaction helper to scrub it.
                 event["error"] = type(exc).__name__
+                # The exception carries its own events: the catch site marks them
+                # fatal only if this very object ended the block (SHA-523).
+                exc.__dict__.setdefault(_EVENTS_ATTR, []).append(event)
             call_log.append(event)
         record_outcome(skill_dir, ok=ok)
 
@@ -252,6 +255,19 @@ def _with_outcome(
         return result
 
     return wrapper
+
+
+_EVENTS_ATTR = "_cr_skill_events"
+
+
+def mark_fatal(exc: BaseException) -> None:
+    """Flag the skill calls that raised `exc` itself as the block's cause (SHA-523).
+
+    A skill error the user code caught and replaced with its own exception —
+    even one of the same class — is a different object and stays unflagged.
+    """
+    for event in getattr(exc, _EVENTS_ATTR, ()):
+        event["fatal"] = True
 
 
 class _BrokenSkill:

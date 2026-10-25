@@ -54,7 +54,7 @@ from .metrics import (
     fix_fragment,
 )
 from .restore import make_restore, saved_output_name
-from .skills import SKILL_SERVERS, SkillsNamespace, active_skill
+from .skills import SKILL_SERVERS, SkillsNamespace, active_skill, mark_fatal
 from .sql_limit import inject_limit
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
@@ -1105,23 +1105,20 @@ _STR_RESULT_HINT = (
 )
 
 
-def _skill_fallback_hint(error: str, skill_calls: list[dict[str, Any]]) -> str:
+def _skill_fallback_hint(skill_calls: list[dict[str, Any]]) -> str:
     """HINT naming the raw tools a failed skill replaces (SHA-523).
 
     A skill wrapping raw tools fails → the caller still has the primitive path
     (macro-to-micro recovery, arXiv 2610.31461) instead of a dead end. Only a
-    skill whose exception class is the one the block died with: a skill error
-    the user code caught says nothing about why the block failed.
+    skill whose exception ended the block (`mark_fatal`): a skill error the
+    user code caught says nothing about why the block failed.
     """
-    head = error.split("\n\nHINT")[0].rstrip().splitlines()
-    exc_line = head[-1] if head else ""
     lines = []
     seen: set[str] = set()
     for call in skill_calls:
         tools = call.get("fallback")
         name = f"skills.{call.get('skill')}.{call.get('fn')}"
-        cls = call.get("error") or ""
-        if not tools or name in seen or not (exc_line == cls or exc_line.startswith(f"{cls}:")):
+        if not tools or name in seen or not call.get("fatal"):
             continue
         seen.add(name)
         lines.append(
@@ -2102,7 +2099,7 @@ class CodeExecutor:
                 if call.get("success") is False and call.get("skill") in fallbacks:
                     call["fallback"] = list(fallbacks[call["skill"]])
             if not success and error:
-                error += _skill_fallback_hint(error, skill_calls)
+                error += _skill_fallback_hint(skill_calls)
             error = _truncate_error(error, MAX_ERROR_BYTES)
             saved_as = None
             if (
@@ -2280,6 +2277,7 @@ class CodeExecutor:
                     "".join(output_lines),
                     f"Execution timed out after {timeout}s",
                 )
+            mark_fatal(e)
             return finalize(
                 False,
                 "".join(output_lines),

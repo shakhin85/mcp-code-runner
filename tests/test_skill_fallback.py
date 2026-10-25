@@ -71,14 +71,26 @@ def test_skill_without_replaces_gets_no_fallback_hint(tmp_path):
     assert "fallback" not in result["error"]
 
 
-def test_caught_skill_error_adds_no_hint(tmp_path):
-    ex = _executor(tmp_path, "replaces: [srv.read_items:fetch]\n")
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+@pytest.mark.parametrize("raised", ["ValueError('x')", "RuntimeError('other')"])
+def test_caught_skill_error_adds_no_hint(tmp_path, isolation, raised):
+    # Same class as the skill's error included: only the skill's own exception counts.
+    ex = _executor(tmp_path, "replaces: [srv.read_items:fetch]\n", isolation=isolation)
     result = asyncio.run(ex.execute(
-        "try:\n    skills.wrap.fetch()\nexcept RuntimeError:\n    pass\nraise ValueError('x')",
+        f"try:\n    skills.wrap.fetch()\nexcept RuntimeError:\n    pass\nraise {raised}",
         timeout=5,
     ))
     assert result["success"] is False
     assert "fallback" not in result["error"]
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_reraised_skill_error_keeps_hint(tmp_path, isolation):
+    ex = _executor(tmp_path, "replaces: [srv.read_items:fetch]\n", isolation=isolation)
+    result = asyncio.run(ex.execute(
+        "try:\n    skills.wrap.fetch()\nexcept RuntimeError:\n    raise", timeout=5,
+    ))
+    assert "fallback — raw-tools из replaces: srv.read_items" in result["error"]
 
 
 def test_next_block_raw_call_counts_as_recovered(tmp_path):
