@@ -18,6 +18,8 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
   `skill_call` events (one per `skills.<name>.<fn>` call, child calls included) feed
   `summarize_skills` behind `get_metrics(skills=True)`: calls, error %, last call per
   function and trim candidates (unused / failing, thresholds `SKILL_TRIM_*`, SHA-484).
+  A skill that raises gets `HINT: … fallback — raw-tools из replaces: …` (SHA-523); its
+  `fallback` field plus the next block's `ok_tools` give the `fallback.share` there.
   `PastFixIndex` (SHA-483, lazy, cached by mtime/size) pairs an error (class + tool) with the
   next successful block of the session (`fix_line`, literals masked, ≤300) and appends one
   `HINT: в прошлый раз …` on a repeat; `summarize_errors` adds `repeat_error_share`.

@@ -215,6 +215,34 @@ SKILL_TRIM_MIN_CALLS = 5
 SKILL_TRIM_ERROR_SHARE = 0.3
 
 
+def summarize_fallbacks(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Share of failed skill calls the session recovered from via a raw tool (SHA-523).
+
+    A failed `skill_call` carrying `fallback` (raw tools from the skill's
+    `replaces:`) is recovered when the session's next execute_code block
+    called one of those tools successfully (`ok_tools`). Events are in file
+    order: a block's skill_call lines follow its own execute_code line, so the
+    next execute_code of the session is the next block.
+    """
+    pending: dict[str, set[str]] = {}
+    failures = recovered = 0
+    for ev in events:
+        sid = ev.get("session_id")
+        if not sid:
+            continue
+        kind = ev.get("kind")
+        if kind == "skill_call" and ev.get("success") is False and ev.get("fallback"):
+            pending.setdefault(sid, set()).update(ev["fallback"])
+        elif kind == "execute_code" and sid in pending:
+            failures += 1
+            recovered += bool(pending.pop(sid) & set(ev.get("ok_tools") or ()))
+    return {
+        "failures": failures,
+        "recovered": recovered,
+        "share": round(recovered / failures, 4) if failures else 0.0,
+    }
+
+
 def summarize_skills(
     events: list[dict[str, Any]], installed: dict[str, list[str]]
 ) -> dict[str, Any]:
@@ -260,6 +288,7 @@ def summarize_skills(
         # numbers actually cover.
         "covered_from": calls[0].get("ts") if calls else None,
         "candidates": sum(r["candidate"] is not None for r in out),
+        "fallback": summarize_fallbacks(events),
         "rows": out,
     }
 

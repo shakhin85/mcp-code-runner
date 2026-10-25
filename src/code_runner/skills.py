@@ -292,13 +292,18 @@ class SkillsNamespace:
     the per-session workspace-bound safe_open before each user run.
     """
 
-    __slots__ = ("_proxies", "_shared_builtins", "root", "replacements", "_call_log")
+    __slots__ = (
+        "_proxies", "_shared_builtins", "root", "replacements", "fallbacks", "_call_log",
+    )
 
     def __init__(self, specs: dict[str, SkillSpec]) -> None:
         self._proxies: dict[str, Any] = {}
         # "server.tool" -> "skills.<name>.<fn>": what the side-effect gate
         # recommends instead of a raw tool a skill declared via `replaces:`.
         self.replacements: dict[str, str] = {}
+        # skill name -> the raw "server.tool"s from its `replaces:` (SHA-523): the
+        # fallback a failed skill call names, so the caller isn't left at a dead end.
+        self.fallbacks: dict[str, tuple[str, ...]] = {}
         # One entry per skill-callable call since the last drain_calls().
         self._call_log: list[dict[str, Any]] = []
         # Where these skills were loaded from. Skill callables can't be pickled
@@ -329,10 +334,14 @@ class SkillsNamespace:
             )
             # `server.tool:fn` names the replacing function; bare `server.tool`
             # points at the skill as a whole rather than guessing a function.
+            tools = []
             for raw in spec.replaces:
                 tool, _, fn = raw.partition(":")
                 target = f"skills.{name}.{fn}" if fn else f"skills.{name}"
                 self.replacements.setdefault(tool, target)
+                tools.append(tool)
+            if tools:
+                self.fallbacks[name] = tuple(tools)
 
     def find_callables(self, fn_name: str) -> list[tuple[str, Any]]:
         """All loaded skill callables named `fn_name`, as (skill_name, fn).

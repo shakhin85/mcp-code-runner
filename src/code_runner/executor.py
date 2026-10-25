@@ -1105,6 +1105,32 @@ _STR_RESULT_HINT = (
 )
 
 
+def _skill_fallback_hint(error: str, skill_calls: list[dict[str, Any]]) -> str:
+    """HINT naming the raw tools a failed skill replaces (SHA-523).
+
+    A skill wrapping raw tools fails → the caller still has the primitive path
+    (macro-to-micro recovery, arXiv 2610.31461) instead of a dead end. Only a
+    skill whose exception class is the one the block died with: a skill error
+    the user code caught says nothing about why the block failed.
+    """
+    head = error.split("\n\nHINT")[0].rstrip().splitlines()
+    exc_line = head[-1] if head else ""
+    lines = []
+    seen: set[str] = set()
+    for call in skill_calls:
+        tools = call.get("fallback")
+        name = f"skills.{call.get('skill')}.{call.get('fn')}"
+        cls = call.get("error") or ""
+        if not tools or name in seen or not (exc_line == cls or exc_line.startswith(f"{cls}:")):
+            continue
+        seen.add(name)
+        lines.append(
+            f"HINT: {name} упал; fallback — raw-tools из replaces: {', '.join(tools)} "
+            f"(side-effecting tool требует allow_side_effects)"
+        )
+    return "".join("\n\n" + ln for ln in lines)
+
+
 def _str_result_hint(exc: "BaseException | str", stats: dict[str, Any]) -> str:
     """Append a footgun hint iff a subscript error coincides with a str tool result.
 
@@ -1603,6 +1629,10 @@ class _ToolNamespace:
             finally:
                 if self._stats is not None:
                     self._stats["tool_calls"] += 1
+                    if success:
+                        # SHA-523: which raw tools a block reached — the fallback
+                        # share pairs a failed skill with the next block's tools.
+                        self._stats.setdefault("ok_tools", set()).add(f"{server}.{tool_name}")
                     self._stats["raw_tool_bytes"] = (
                         self._stats.get("raw_tool_bytes", 0) + out_bytes
                     )
@@ -2063,6 +2093,16 @@ class CodeExecutor:
                 state.failed_code = None if success else source
             if not success and error and self._past_fix is not None:
                 error += self._past_fix.hint(error)
+            # SHA-484: per-function skill usage for the trim report. In-process
+            # calls sit in the namespace log; a child's come back with its result.
+            drain = getattr(self.skills, "drain_calls", None)
+            skill_calls = (drain() if drain else []) + (child_skill_calls or [])
+            fallbacks = getattr(self.skills, "fallbacks", None) or {}
+            for call in skill_calls:
+                if call.get("success") is False and call.get("skill") in fallbacks:
+                    call["fallback"] = list(fallbacks[call["skill"]])
+            if not success and error:
+                error += _skill_fallback_hint(error, skill_calls)
             error = _truncate_error(error, MAX_ERROR_BYTES)
             saved_as = None
             if (
@@ -2102,13 +2142,10 @@ class CodeExecutor:
                         "error": error,
                         "error_class": classify_error(error),
                         "fix_line": fix_line,
+                        "ok_tools": sorted(stats.get("ok_tools", ())),
                     })
                 except Exception:
                     pass
-            # SHA-484: per-function skill usage for the trim report. In-process
-            # calls sit in the namespace log; a child's come back with its result.
-            drain = getattr(self.skills, "drain_calls", None)
-            skill_calls = (drain() if drain else []) + (child_skill_calls or [])
             if self.recorder is not None:
                 for call in skill_calls:
                     with contextlib.suppress(Exception):
