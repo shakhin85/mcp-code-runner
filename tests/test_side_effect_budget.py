@@ -102,10 +102,56 @@ def test_server_wildcard_budget_is_shared(isolation):
 
 
 def test_bad_budget_entry_is_rejected():
-    with pytest.raises(ValueError, match="целое > 0"):
-        SideEffectGate(["linear.linear_createIssue:0"])
-    with pytest.raises(ValueError, match="целое > 0"):
-        SideEffectGate(["linear.*:many"])
+    for entry in ["linear.linear_createIssue:0", "linear.*:many", "linear.x:²"]:
+        with pytest.raises(ValueError, match="целое > 0"):
+            SideEffectGate([entry])
+
+
+def test_colon_in_server_name_is_not_a_budget():
+    allowed, budget = SideEffectGate.parse(["plugin:x:y.create", "plugin:x:y.*:3"])
+    assert allowed == {"plugin:x:y.create", "plugin:x:y.*"}
+    assert budget == {"plugin:x:y.*": 3}
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_bad_budget_entry_fails_the_run_cleanly(isolation):
+    ex, linear = _executor(isolation)
+    result = _run(ex, CREATE, allow_side_effects=["linear.linear_createIssue:0"])
+    assert result["success"] is False
+    assert "целое > 0" in result["error"]
+    assert "isolation error" not in result["error"]
+    assert linear.calls == []
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_server_budget_caps_tool_with_own_entry(isolation):
+    ex, linear = _executor(isolation)
+    result = _run(
+        ex, CREATE * 2,
+        allow_side_effects=["linear.linear_createIssue", "linear.*:1"],
+    )
+    assert result["success"] is False
+    assert "linear.*: бюджет 1" in result["error"], result["error"]
+    assert len(linear.calls) == 1
+
+
+def test_uncanonical_args_are_not_remembered():
+    assert SideEffectGate.fingerprint("s", "t", {1: "a", "b": 2}, (False, None)) is None
+    refused = {}
+    gate = SideEffectGate(None, refused)
+    gate.remember(None, "x")
+    gate.check_repeat(None)
+    assert refused == {}
+
+
+def test_refusal_store_is_capped(monkeypatch):
+    monkeypatch.setattr("code_runner.executor.MAX_REFUSALS", 3)
+    refused = {}
+    gate = SideEffectGate(None, refused)
+    for i in range(5):
+        gate.remember(f"fp{i}", "m" * 5000)
+    assert list(refused) == ["fp2", "fp3", "fp4"]
+    assert all(len(msg) == 2000 for _, msg in refused.values())
 
 
 @pytest.mark.parametrize("isolation", ISOLATIONS)

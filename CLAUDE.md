@@ -117,7 +117,8 @@ matches (`restore.py`, SHA-482) — no downstream call is repeated.
   raises `PermissionError` even under `allow_side_effects`; `allow_tainted=["server.tool" | "server.*"]` lifts it.
   Limits: a paraphrased/re-encoded copy or pieces <20 chars slip through; state does not cross `execute_code` calls.
 - **Side-effect budget (SHA-524)** — `SideEffectGate`: an `allow_side_effects` entry `srv.tool:N` / `srv.*:N` (shared counter)
-  allows N calls per `execute_code` (skill-side and user proxies share it). A gate refusal (deny-by-default, secret) is kept by
+  allows N calls per `execute_code` (skill-side and user proxies share it; `srv.*:N` caps the server even for a tool with its
+  own entry; a ':' suffix with a dot is part of the name — server names may hold ':'). A gate refusal (deny-by-default, secret) is kept by
   fingerprint (server.tool + canonical args + caller) in the session; the same call under the same permissions is refused at once
   with `повтор отказа:`. Budget and taint refusals are run-level and not remembered.
 - **Skill-side proxies (SHA-502)** — skills get their own server proxies via the builtin `_cr_servers`

@@ -352,6 +352,9 @@ def _gated_name(tool_name: str, kwargs: dict) -> str:
 
 
 REPEAT_PREFIX = "повтор отказа: "
+# A loop of unique refused calls must not grow the session without bound.
+MAX_REFUSALS = 1000
+MAX_REFUSAL_CHARS = 2000
 
 
 class SideEffectGate:
@@ -369,61 +372,77 @@ class SideEffectGate:
         refused: dict[str, tuple[str, str]] | None = None,
         allow_tainted: list[str] | None = None,
     ):
-        self.allowed: set[str] = set()
-        self._budget: dict[str, int] = {}
+        self.allowed, self._budget = self.parse(entries)
         self._used: collections.Counter[str] = collections.Counter()
-        for entry in entries or []:
-            name, sep, n = entry.rpartition(":")
-            if not sep:
-                self.allowed.add(entry)
-                continue
-            if not (n.isdigit() and int(n) > 0):
-                raise ValueError(
-                    f"allow_side_effects: {entry!r} — после ':' ждём целое > 0"
-                )
-            self.allowed.add(name)
-            self._budget[name] = int(n)
         self._refused = refused
         self._perms = json.dumps(
             [sorted(entries or []), sorted(allow_tainted or [])], ensure_ascii=False
         )
 
-    def entry(self, server: str, tool: str) -> str | None:
-        """The allow entry covering server.tool, or None."""
-        for key in (f"{server}.{tool}", f"{server}.*"):
-            if key in self.allowed:
-                return key
-        return None
+    @staticmethod
+    def parse(entries: list[str] | None) -> tuple[set[str], dict[str, int]]:
+        """Allowed names and budgets. The budget is a ':' suffix without a dot:
+        server names may hold ':' themselves ("plugin:x:y.create" is a name)."""
+        allowed: set[str] = set()
+        budget: dict[str, int] = {}
+        for entry in entries or []:
+            name, sep, n = entry.rpartition(":")
+            if not sep or "." in n:
+                allowed.add(entry)
+                continue
+            if not (n.isascii() and n.isdigit() and int(n) > 0):
+                raise ValueError(
+                    f"allow_side_effects: {entry!r} — после ':' ждём целое > 0"
+                )
+            allowed.add(name)
+            budget[name] = int(n)
+        return allowed, budget
 
-    def spend(self, key: str) -> None:
-        budget = self._budget.get(key)
-        if budget is None:
-            return
-        if self._used[key] >= budget:
-            raise PermissionError(
-                f"{key}: бюджет {budget} вызовов за execute_code исчерпан; "
-                f'подними его: allow_side_effects=["{key}:<N>"]'
-            )
-        self._used[key] += 1
+    def entries(self, server: str, tool: str) -> list[str]:
+        """The allow entries covering server.tool; empty — not allowed."""
+        return [k for k in (f"{server}.{tool}", f"{server}.*") if k in self.allowed]
+
+    def spend(self, keys: list[str]) -> None:
+        """Every budgeted key is spent: "srv.*:N" caps the server even when the
+        tool also has an entry of its own."""
+        for key in keys:
+            budget = self._budget.get(key)
+            if budget is not None and self._used[key] >= budget:
+                raise PermissionError(
+                    f"{key}: бюджет {budget} вызовов за execute_code исчерпан; "
+                    f'подними его: allow_side_effects=["{key}:<N>"]'
+                )
+        for key in keys:
+            self._used[key] += 1
 
     @staticmethod
-    def fingerprint(server: str, tool: str, kwargs: dict, caller: tuple) -> str:
+    def fingerprint(server: str, tool: str, kwargs: dict, caller: tuple) -> str | None:
         """caller — (skill_side, active skill): the same call is refused to user
-        code and let through for the skill-side owner, so they never share one."""
-        blob = json.dumps(
-            [f"{server}.{tool}", kwargs, caller],
-            sort_keys=True, ensure_ascii=False, default=str,
-        )
+        code and let through for the skill-side owner, so they never share one.
+        None for args json can't canonicalize — that call is just not remembered."""
+        try:
+            blob = json.dumps(
+                [f"{server}.{tool}", kwargs, caller],
+                sort_keys=True, ensure_ascii=False, default=str,
+            )
+        except (TypeError, ValueError):
+            return None
         return hashlib.sha256(blob.encode()).hexdigest()
 
-    def check_repeat(self, fp: str) -> None:
-        hit = self._refused.get(fp) if self._refused is not None else None
+    def check_repeat(self, fp: str | None) -> None:
+        if fp is None or self._refused is None:
+            return
+        hit = self._refused.get(fp)
         if hit is not None and hit[0] == self._perms:
             raise PermissionError(REPEAT_PREFIX + hit[1])
 
-    def remember(self, fp: str, message: str) -> None:
-        if self._refused is not None:
-            self._refused[fp] = (self._perms, message)
+    def remember(self, fp: str | None, message: str) -> None:
+        if fp is None or self._refused is None:
+            return
+        self._refused.pop(fp, None)
+        while len(self._refused) >= MAX_REFUSALS:
+            del self._refused[next(iter(self._refused))]
+        self._refused[fp] = (self._perms, message[:MAX_REFUSAL_CHARS])
 
 
 # SHA-481: run-level taint. Text returned by an untrusted server (web, mail,
@@ -1454,7 +1473,7 @@ class _ToolNamespace:
             gated = _gated_name(tool_name, kwargs)
             side_effecting = _is_side_effecting(gated)
             if side_effecting:
-                entry = gate.entry(server, gated)
+                entries = gate.entries(server, gated)
                 # SHA-524: a refusal already given under these permissions is
                 # repeated at once — no secret scan, no taint walk.
                 fp = gate.fingerprint(
@@ -1462,7 +1481,7 @@ class _ToolNamespace:
                 )
                 gate.check_repeat(fp)
                 try:
-                    if entry is None:
+                    if not entries:
                         skill = replacements.get(f"{server}.{gated}")
                         owner = (
                             skill is not None
@@ -1490,15 +1509,14 @@ class _ToolNamespace:
                     # forgetful_create(redact=False) without any allow. A skill's
                     # escape needs allow_side_effects; user code calling a raw tool
                     # has none even then.
-                    if not (skill_side and entry is not None):
+                    if not (skill_side and entries):
                         secret_gate.check(server, gated, kwargs)
                 except PermissionError as e:
                     gate.remember(fp, str(e))
                     raise
                 if taint is not None:
                     taint.check(server, gated, kwargs)
-                if entry is not None:
-                    gate.spend(entry)
+                gate.spend(entries)
             limit_applied = self._maybe_inject_limit(tool_name, kwargs)
             if limit_applied and self._stats is not None:
                 self._stats["auto_limit_hits"] += 1
@@ -2102,6 +2120,7 @@ class CodeExecutor:
         # Pipeline: 1. validate → 2. transform → 3. wrap → 4. exec
         try:
             validate_code(code)
+            SideEffectGate.parse(allow_side_effects)
         except ValueError as e:
             return finalize(False, "", str(e))
 
