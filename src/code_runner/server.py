@@ -555,7 +555,8 @@ async def get_metrics(
         window_start = datetime.now(UTC) - timedelta(days=SKILL_TRIM_WINDOW_DAYS)
         events = executor.recorder.read(
             since=since or window_start.strftime("%Y-%m-%dT%H:%M:%S"),
-            limit=sys.maxsize,
+            kind=("skill_call", "execute_code"),
+            limit=0,
         )
         installed = executor.skills.catalog() if executor.skills is not None else {}
         return json.dumps(

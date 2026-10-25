@@ -1626,9 +1626,10 @@ class _ToolNamespace:
             finally:
                 if self._stats is not None:
                     self._stats["tool_calls"] += 1
-                    if success:
-                        # SHA-523: which raw tools a block reached — the fallback
-                        # share pairs a failed skill with the next block's tools.
+                    if success and not skill_side:
+                        # SHA-523: which raw tools the block's own code reached — the
+                        # fallback share pairs a failed skill with the next block's
+                        # tools; a skill's inner calls would make its retry "recovered".
                         self._stats.setdefault("ok_tools", set()).add(f"{server}.{tool_name}")
                     self._stats["raw_tool_bytes"] = (
                         self._stats.get("raw_tool_bytes", 0) + out_bytes
@@ -2096,7 +2097,7 @@ class CodeExecutor:
             skill_calls = (drain() if drain else []) + (child_skill_calls or [])
             fallbacks = getattr(self.skills, "fallbacks", None) or {}
             for call in skill_calls:
-                if call.get("success") is False and call.get("skill") in fallbacks:
+                if call.get("fatal") and call.get("skill") in fallbacks:
                     call["fallback"] = list(fallbacks[call["skill"]])
             if not success and error:
                 error += _skill_fallback_hint(skill_calls)

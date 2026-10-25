@@ -218,8 +218,8 @@ SKILL_TRIM_ERROR_SHARE = 0.3
 def summarize_fallbacks(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Share of failed skill calls the session recovered from via a raw tool (SHA-523).
 
-    A failed `skill_call` carrying `fallback` (raw tools from the skill's
-    `replaces:`) is recovered when the session's next execute_code block
+    A fatal `skill_call` (it ended the block) carrying `fallback` (raw tools
+    from the skill's `replaces:`) is recovered when the session's next execute_code block
     called one of those tools successfully (`ok_tools`). Events are in file
     order: a block's skill_call lines follow its own execute_code line, so the
     next execute_code of the session is the next block.
@@ -231,7 +231,7 @@ def summarize_fallbacks(events: list[dict[str, Any]]) -> dict[str, Any]:
         if not sid:
             continue
         kind = ev.get("kind")
-        if kind == "skill_call" and ev.get("success") is False and ev.get("fallback"):
+        if kind == "skill_call" and ev.get("fatal") and ev.get("fallback"):
             pending.setdefault(sid, set()).update(ev["fallback"])
         elif kind == "execute_code" and sid in pending:
             failures += 1
@@ -404,15 +404,16 @@ class MetricsRecorder:
         self,
         since: str | None = None,
         server: str | None = None,
-        kind: str | None = None,
+        kind: str | tuple[str, ...] | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Return up to `limit` most recent events matching the filters.
 
         since: ISO-8601 string — keep only events with ts >= since.
         server: match event["server"] exactly.
-        kind: match event["kind"] exactly.
+        kind: match event["kind"] exactly (a tuple matches any of its members).
         """
+        kinds = (kind,) if isinstance(kind, str) else kind
         events: list[dict[str, Any]] = []
         for p in self._iter_files_chronological():
             try:
@@ -431,7 +432,7 @@ class MetricsRecorder:
                             continue
                         if server and ev.get("server") != server:
                             continue
-                        if kind and ev.get("kind") != kind:
+                        if kinds and ev.get("kind") not in kinds:
                             continue
                         events.append(ev)
             except OSError:

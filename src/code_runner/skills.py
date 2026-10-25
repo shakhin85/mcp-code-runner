@@ -261,13 +261,19 @@ _EVENTS_ATTR = "_cr_skill_events"
 
 
 def mark_fatal(exc: BaseException) -> None:
-    """Flag the skill calls that raised `exc` itself as the block's cause (SHA-523).
+    """Flag the skill calls behind the exception that ended the block (SHA-523).
 
-    A skill error the user code caught and replaced with its own exception —
-    even one of the same class — is a different object and stays unflagged.
+    Covers `exc` and its explicit `raise X from e` chain (`__cause__`; the
+    implicit `__context__` is not followed). A skill error the user code caught
+    and replaced with an unchained exception — even of the same class — stays
+    unflagged.
     """
-    for event in getattr(exc, _EVENTS_ATTR, ()):
-        event["fatal"] = True
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        for event in getattr(exc, _EVENTS_ATTR, ()):
+            event["fatal"] = True
+        exc = exc.__cause__
 
 
 class _BrokenSkill:
