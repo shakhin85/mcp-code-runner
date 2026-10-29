@@ -134,13 +134,12 @@ def test_denied_side_effect_not_journaled(tmp_path):
     assert [r["tool"] for r in _journal(tmp_path, "s4")] == ["query"]
 
 
-def test_session_id_without_workspace_still_runs(tmp_path):
-    """An id the workspace rejects (`:` is invalid) still gets session vars;
-    it just has no workspace, so no journal — same as open() refusing lazily."""
+def test_colon_session_id_gets_journal(tmp_path):
+    """`<agent>:<topic>` is a valid id: the call lands in its journal."""
     ex = CodeExecutor(_Pool(), workspace=WorkspaceManager(tmp_path),
                       isolation="inprocess")
     result = asyncio.run(ex.execute(
-        "await srv.query(q=1)\nprint('ok')", timeout=5, session_id="bad:id"
+        "await srv.query(q=1)\nprint('ok')", timeout=5, session_id="agent:topic"
     ))
     assert result["success"] is True, result["error"]
-    assert list(tmp_path.iterdir()) == []
+    assert (tmp_path / "agent:topic" / "calls.jsonl").exists()

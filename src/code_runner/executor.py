@@ -56,7 +56,7 @@ from .metrics import (
 from .restore import make_restore, saved_output_name
 from .skills import SKILL_SERVERS, SkillsNamespace, active_skill, mark_fatal
 from .sql_limit import inject_limit
-from .workspace import WorkspaceError, WorkspaceManager, safe_open
+from .workspace import WorkspaceError, WorkspaceManager, safe_open, validate_session_id
 
 SAFE_BUILTINS = {
     "print", "len", "range", "enumerate", "zip", "map", "filter",
@@ -2063,6 +2063,13 @@ class CodeExecutor:
         allow_side_effects: list[str] | None = None,
         allow_tainted: list[str] | None = None,
     ) -> dict[str, Any]:
+        if session_id is not None and self.workspace is not None:
+            # Checked before the run: a bad id used to surface only when the
+            # workspace was first touched — after the downstream calls were made.
+            try:
+                validate_session_id(session_id)
+            except WorkspaceError as e:
+                return {"success": False, "output": "", "error": f"WorkspaceError: {e}"}
         start_exec = time.monotonic()
         # Fingerprint the code as the caller sent it, before _transform_last_expr
         # rewrites it — identical snippets must hash identically across calls.
