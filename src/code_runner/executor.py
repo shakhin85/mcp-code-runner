@@ -753,6 +753,7 @@ def _quiet_failure_warnings(stats: dict[str, Any]) -> list[str]:
         ("limit_saturated", "hit the auto-LIMIT — rows are partial"),
         ("raw_capped", "hit RAW-CAP — a truncated string, not parsed rows"),
         ("all_none_results", "returned rows where every value is None"),
+        ("error_text_results", "returned error text without isError — a failure, not data"),
     )
     out = []
     for key, label in labels:
@@ -761,10 +762,13 @@ def _quiet_failure_warnings(stats: dict[str, Any]) -> list[str]:
             out.append(f"{n} call{'s' if n != 1 else ''} {label}")
             if key == "raw_capped" and stats.get("raw_capped_calls"):
                 out[-1] += f" ({_raw_cap_details(stats['raw_capped_calls'])})"
+            if key == "error_text_results" and stats.get("error_text_calls"):
+                out[-1] += f" ({', '.join(sorted(set(stats['error_text_calls'])))})"
     return out
 
 
 _UNPARSED = object()
+_ERROR_TEXT_RE = re.compile(r"(?:error|exception)\b\s*[:\-]", re.IGNORECASE)
 
 
 def _result_shape(parsed: Any, limit_applied: bool, auto_limit: int) -> str | None:
@@ -865,7 +869,9 @@ def _parse_python_repr(text: str) -> Any:
     )
 
 
-_PRELOADED_MODULES = frozenset({"asyncio", *SAFE_MODULES})
+# `skills` is not a module, but `from skills import x` binds the same object as
+# `skills.x`, so it is a no-op import like the rest.
+_PRELOADED_MODULES = frozenset({"asyncio", "skills", *SAFE_MODULES})
 
 
 def _is_noop_import(node: ast.AST) -> bool:
@@ -1206,6 +1212,36 @@ def _signature_hint(exc: BaseException, skills: "SkillsNamespace | None") -> str
 
 _INTROSPECTION_NAMES = frozenset({"dir", "globals", "locals", "vars"})
 _NAME_ERROR_RE = re.compile(r"name '([^']+)' is not defined")
+_ATTR_PROBE_NAMES = frozenset({"getattr", "hasattr", "setattr", "delattr"})
+# Claude Code spells a tool mcp__<server>__<tool>; the sandbox object is <server>.
+_CC_TOOL_NAME_RE = re.compile(r"mcp__(\w+?)__(\w+)$")
+
+
+_AWAIT_SYNC_RE = re.compile(r"can't be (?:awaited|used in 'await' expression)")
+_JSON_PARSED_RE = re.compile(r"the JSON object must be str, bytes or bytearray, not (list|dict)")
+
+
+def _type_error_hint(exc: BaseException) -> str:
+    """Name the fix for two TypeErrors that come from misreading proxy results.
+
+    Proxies return parsed objects and skills are mostly sync, so `await skill()`
+    and `json.loads(result)` fail on a value that is already what the caller wants.
+    """
+    if not isinstance(exc, TypeError):
+        return ""
+    msg = str(exc)
+    if _AWAIT_SYNC_RE.search(msg):
+        return (
+            "\n\nHINT: await применён к готовому значению — вызванная функция "
+            "синхронная (так устроено большинство skills.*). Убери await."
+        )
+    m = _JSON_PARSED_RE.search(msg)
+    if m:
+        return (
+            f"\n\nHINT: MCP-прокси уже вернул разобранный {m.group(1)} — "
+            "json.loads не нужен, работай с результатом напрямую."
+        )
+    return ""
 
 
 def _name_error_hint(exc: BaseException, namespace: dict[str, Any]) -> str:
@@ -1229,15 +1265,29 @@ def _name_error_hint(exc: BaseException, namespace: dict[str, Any]) -> str:
             "инструментов — MCP-тул list_available_tools / search_tools (вне "
             "execute_code); skills — skills.sandbox_introspect.list_all()."
         )
+    if missing in _ATTR_PROBE_NAMES:
+        return (
+            f"\n\nHINT: {missing}() в песочнице недоступен (обходит запрет на dunder). "
+            "Для dict — 'k' in d / d.get('k'); для объекта — try: x.attr "
+            "except AttributeError: …"
+        )
+    proxies = sorted(
+        name for name, value in namespace.items()
+        if isinstance(value, _McpProxy)
+    )
+    m = _CC_TOOL_NAME_RE.match(missing)
+    if m:
+        server, tool = m.groups()
+        if server in proxies:
+            return (
+                f"\n\nHINT: '{missing}' — имя тула в формате Claude Code. "
+                f"В песочнице это {server}.{tool}(...)"
+            )
     visible = sorted(
         name for name in namespace
         if not name.startswith("_") and name != "__builtins__"
     )
     close = difflib.get_close_matches(missing, visible, n=3, cutoff=0.6)
-    proxies = sorted(
-        name for name, value in namespace.items()
-        if isinstance(value, _McpProxy)
-    )
     parts = []
     if close:
         parts.append(f"похожие имена в песочнице: {', '.join(close)}")
@@ -1627,6 +1677,16 @@ class _ToolNamespace(_McpProxy):
                         return parsed
                 if self._stats is not None:
                     self._stats["str_results"] += 1
+                    # Some servers (postgres MCP) report a failed query as plain
+                    # "Error: …" text with isError unset; user code then parses
+                    # or aggregates it as if it were rows.
+                    if _ERROR_TEXT_RE.match(stripped):
+                        self._stats["error_text_results"] = (
+                            self._stats.get("error_text_results", 0) + 1
+                        )
+                        self._stats.setdefault("error_text_calls", []).append(
+                            f"{server}.{tool_name}"
+                        )
                 return combined
             except BaseException as e:
                 success = False
@@ -2302,6 +2362,7 @@ class CodeExecutor:
                 + _str_result_hint(e, stats)
                 + _signature_hint(e, self.skills)
                 + _name_error_hint(e, namespace)
+                + _type_error_hint(e)
                 + _limit_error_hint(e),
             )
         finally:

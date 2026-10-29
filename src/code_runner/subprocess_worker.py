@@ -46,6 +46,7 @@ from .executor import (
     _McpProxy,
     _name_error_hint,
     _signature_hint,
+    _type_error_hint,
     make_safe_builtins,
 )
 from .restore import make_restore
@@ -326,6 +327,7 @@ async def _exec_user_code(
                 _format_user_traceback(e)
                 + _signature_hint(e, namespace.get("skills"))
                 + _name_error_hint(e, namespace)
+                + _type_error_hint(e)
                 + _limit_error_hint(e)
             ),
             "user_vars": None,
