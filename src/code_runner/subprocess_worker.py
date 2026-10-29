@@ -43,6 +43,7 @@ from .executor import (
     _format_attr,
     _format_user_traceback,
     _limit_error_hint,
+    _McpProxy,
     _name_error_hint,
     _signature_hint,
     make_safe_builtins,
@@ -114,7 +115,7 @@ def _make_remote_exc(type_name: str, msg: str) -> BaseException:
     return exc
 
 
-class _RemoteProxy:
+class _RemoteProxy(_McpProxy):
     """Stand-in for one MCP server: each tool becomes an async method that RPCs
     the real call back to the parent over the pipe."""
 

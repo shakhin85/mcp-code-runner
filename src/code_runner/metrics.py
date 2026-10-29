@@ -72,20 +72,39 @@ def classify_error(error: str | None) -> str | None:
 
 
 # SHA-483: HINT с прошлым фиксом. Ключ ошибки — класс + tool (если ошибка пришла
-# из MCP-вызова), фрагмент фикса — поле fix_line следующего успешного блока сессии.
+# из MCP-вызова) либо класс + сообщение исключения; фрагмент фикса — поле fix_line
+# следующего успешного блока сессии.
 PAST_FIX_WINDOW_DAYS = 7
 PAST_FIX_MAX_CHARS = 300
 _TOOL_RE = re.compile(r"\b([A-Za-z_]\w*\.[A-Za-z_]\w*) returned an error:")
 _STRING_LITERAL_RE = re.compile(r"""(["'])(?:\\.|(?!\1).)*(?:\1|$)""")
+_DIGITS_RE = re.compile(r"\d+")
+_MESSAGE_KEY_MAX = 200
 
 
-def error_key(error: str | None) -> tuple[str, str] | None:
-    """(класс, tool) ошибки; tool пуст, если ошибка не из MCP-вызова."""
+def _message_key(text: str) -> str:
+    """Строка исключения (последний заголовок `XxxError: …`, иначе первая строка),
+    цифры заменены на 0: номера строк и счётчики не делят одну ошибку на несколько."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    headers = [ln for ln in lines if _EXC_HEADER_RE.match(ln)]
+    line = headers[-1] if headers else (lines[0] if lines else "")
+    return _DIGITS_RE.sub("0", line)[:_MESSAGE_KEY_MAX]
+
+
+def error_key(error: str | None) -> tuple[str, str, str] | None:
+    """(класс, tool, сообщение) ошибки.
+
+    Ошибка MCP-вызова различается по tool, сообщение пусто. Ошибка без tool
+    различается по сообщению: только класс (`TypeError`) сводит в один ключ
+    несвязанные ошибки, и HINT подсовывает чужой фикс.
+    """
     cls = classify_error(error)
     if cls is None:
         return None
     m = _TOOL_RE.search(error or "")
-    return (cls, m.group(1) if m else "")
+    if m:
+        return (cls, m.group(1), "")
+    return (cls, "", _message_key(error or ""))
 
 
 def fix_fragment(failed_code: str, fixed_code: str) -> str:
@@ -112,9 +131,9 @@ class PastFixIndex:
         self._recorder = recorder
         self._days = days
         self._sig: tuple[int, int] | None = None
-        self._fixes: dict[tuple[str, str], str] = {}
+        self._fixes: dict[tuple[str, str, str], str] = {}
 
-    def _load(self) -> dict[tuple[str, str], str]:
+    def _load(self) -> dict[tuple[str, str, str], str]:
         try:
             st = self._recorder.path.stat()
         except OSError:
@@ -125,10 +144,10 @@ class PastFixIndex:
             self._sig = sig
         return self._fixes
 
-    def _build(self) -> dict[tuple[str, str], str]:
+    def _build(self) -> dict[tuple[str, str, str], str]:
         since = (datetime.now(UTC) - timedelta(days=self._days)).strftime("%Y-%m-%dT%H:%M:%S")
-        pending: dict[str, set[tuple[str, str]]] = {}
-        fixes: dict[tuple[str, str], str] = {}
+        pending: dict[str, set[tuple[str, str, str]]] = {}
+        fixes: dict[tuple[str, str, str], str] = {}
         for ev in self._recorder.read(since=since, limit=0):
             sid = ev.get("session_id")
             if ev.get("kind") != "execute_code" or not sid:
@@ -155,7 +174,7 @@ class PastFixIndex:
             return ""
         if not frag:
             return ""
-        cls, tool = key
+        cls, tool, _ = key
         head = f"HINT: в прошлый раз {cls}{f' ({tool})' if tool else ''} исправили так: "
         return "\n\n" + (head + frag)[:PAST_FIX_MAX_CHARS]
 
@@ -175,14 +194,14 @@ def summarize_errors(events: list[dict[str, Any]]) -> dict[str, Any]:
     for ev in failures:
         cls = ev.get("error_class") or classify_error(ev.get("error")) or "Other"
         by_class[cls] = by_class.get(cls, 0) + 1
-    seen: set[tuple[str, tuple[str, str]]] = set()
+    seen: set[tuple[str, tuple[str, str, str]]] = set()
     repeats = 0
     for ev in failures:
         sid = ev.get("session_id")
         if not sid:
             continue
         cls = ev.get("error_class") or classify_error(ev.get("error")) or "Other"
-        mark = (sid, error_key(ev.get("error")) or (cls, ""))
+        mark = (sid, error_key(ev.get("error")) or (cls, "", ""))
         if mark in seen:
             repeats += 1
         seen.add(mark)

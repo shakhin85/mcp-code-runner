@@ -21,7 +21,14 @@ class WorkspaceError(ValueError):
     """Raised on unsafe paths, bad session ids, or write-cap violations."""
 
 
-_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,63}$")
+# ':' is allowed: agents name sessions "<agent>:<topic>" (web-research:roles).
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:\-]{0,63}$")
+
+
+def validate_session_id(session_id: str) -> None:
+    """Raise WorkspaceError unless session_id is usable as a workspace dir name."""
+    if not _SESSION_ID_RE.match(session_id or ""):
+        raise WorkspaceError(f"invalid session_id: must match {_SESSION_ID_RE.pattern}")
 
 DEFAULT_READ_ROOTS = (Path.home() / "projects",)
 
@@ -52,10 +59,7 @@ class WorkspaceManager:
         )
 
     def _session_dir(self, session_id: str) -> Path:
-        if not _SESSION_ID_RE.match(session_id or ""):
-            raise WorkspaceError(
-                f"invalid session_id: must match {_SESSION_ID_RE.pattern}"
-            )
+        validate_session_id(session_id)
         return self.root / session_id
 
     def resolve_path(self, session_id: str, rel_path: str) -> Path:
