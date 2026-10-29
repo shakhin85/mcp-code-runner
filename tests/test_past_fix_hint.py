@@ -104,6 +104,22 @@ def test_tool_error_key_includes_tool(tmp_path):
     assert len(hint.strip()) <= 300
 
 
+def test_same_class_other_message_gets_no_hint(tmp_path):
+    """Без tool ключ — класс + сообщение: чужой TypeError не даёт своего фикса."""
+    other = "Traceback (most recent call last):\nTypeError: 'NoneType' object is not iterable"
+    mine = "Traceback (most recent call last):\nTypeError: 'dict' object can't be awaited"
+    idx = _index(tmp_path, [_err("a", other, 1), _ok("a", days_ago=1)])
+    assert idx.hint(mine) == ""
+
+
+def test_message_key_ignores_digits(tmp_path):
+    """Номер строки в сообщении не делит одну ошибку на две."""
+    first = "Traceback (most recent call last):\nIndexError: index 3 out of range"
+    again = "Traceback (most recent call last):\nIndexError: index 17 out of range"
+    idx = _index(tmp_path, [_err("a", first, 1), _ok("a", days_ago=1)])
+    assert FIX in idx.hint(again)
+
+
 def test_long_fragment_keeps_hint_within_300(tmp_path):
     idx = _index(tmp_path, [_err("a", VALUE_ERR, 1), _ok("a", fix="x" * 300, days_ago=1)])
     assert len(idx.hint(VALUE_ERR).strip()) <= 300
@@ -185,7 +201,7 @@ def test_fix_line_is_short_and_has_no_secret(tmp_path, isolation):
     events = [json.loads(ln) for ln in raw.splitlines()]
     fix = [e["fix_line"] for e in events if e.get("fix_line")]
     assert len(fix) == 1 and 0 < len(fix[0]) <= 300
-    (res,) = _run(isolation, rec, "raise ValueError('again')", sid="priv-2")
+    (res,) = _run(isolation, rec, "raise ValueError('boom')", sid="priv-2")
     assert secret not in res["error"]
     assert res["error"].count(MARK) == 1
 
