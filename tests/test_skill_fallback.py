@@ -38,7 +38,12 @@ def _skills(tmp_path, frontmatter):
     d.mkdir(parents=True)
     (d / "SKILL.md").write_text(f"---\n{frontmatter}---\nwrap\n", encoding="utf-8")
     (d / "script.py").write_text(
-        "def fetch():\n    raise RuntimeError('schema drift')\n", encoding="utf-8"
+        "async def fetch():\n"
+        "    await _cr_servers['srv'].read_items()\n"
+        "    raise RuntimeError('schema drift')\n"
+        "def store(tag):\n"
+        "    raise ValueError('tag обязателен')\n",
+        encoding="utf-8",
     )
     return SkillsNamespace(SkillLoader(tmp_path / "skills").discover())
 
@@ -57,7 +62,7 @@ def _executor(tmp_path, frontmatter, recorder=None, isolation="inprocess"):
 @pytest.mark.parametrize("isolation", ISOLATIONS)
 def test_failed_skill_names_replaced_raw_tool(tmp_path, isolation):
     ex = _executor(tmp_path, "replaces: [srv.read_items:fetch]\n", isolation=isolation)
-    result = asyncio.run(ex.execute("skills.wrap.fetch()", timeout=5))
+    result = asyncio.run(ex.execute("await skills.wrap.fetch()", timeout=5))
     assert result["success"] is False
     assert "RuntimeError: schema drift" in result["error"]
     assert "HINT: skills.wrap.fetch упал; fallback — raw-tools из replaces: srv.read_items" \
@@ -66,9 +71,24 @@ def test_failed_skill_names_replaced_raw_tool(tmp_path, isolation):
 
 def test_skill_without_replaces_gets_no_fallback_hint(tmp_path):
     ex = _executor(tmp_path, "name: wrap\n")
-    result = asyncio.run(ex.execute("skills.wrap.fetch()", timeout=5))
+    result = asyncio.run(ex.execute("await skills.wrap.fetch()", timeout=5))
     assert result["success"] is False
     assert "fallback" not in result["error"]
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_skill_failed_before_any_tool_call_gets_no_fallback(tmp_path, isolation):
+    # Bad input: the raw tool would take the same input and skip the skill's check.
+    recorder = _Recorder()
+    ex = _executor(
+        tmp_path, "replaces: [srv.read_items:store]\n", recorder=recorder, isolation=isolation
+    )
+    result = asyncio.run(ex.execute("skills.wrap.store(None)", timeout=5, session_id="s1"))
+    assert "ValueError: tag обязателен" in result["error"]
+    assert "fallback" not in result["error"]
+    call = next(e for e in recorder.events if e["kind"] == "skill_call")
+    assert call["tool_calls"] == 0
+    assert "fallback" not in call
 
 
 @pytest.mark.parametrize("isolation", ISOLATIONS)
@@ -77,7 +97,7 @@ def test_caught_skill_error_adds_no_hint(tmp_path, isolation, raised):
     # Same class as the skill's error included: only the skill's own exception counts.
     ex = _executor(tmp_path, "replaces: [srv.read_items:fetch]\n", isolation=isolation)
     result = asyncio.run(ex.execute(
-        f"try:\n    skills.wrap.fetch()\nexcept RuntimeError:\n    pass\nraise {raised}",
+        f"try:\n    await skills.wrap.fetch()\nexcept RuntimeError:\n    pass\nraise {raised}",
         timeout=5,
     ))
     assert result["success"] is False
@@ -88,7 +108,7 @@ def test_caught_skill_error_adds_no_hint(tmp_path, isolation, raised):
 def test_reraised_skill_error_keeps_hint(tmp_path, isolation):
     ex = _executor(tmp_path, "replaces: [srv.read_items:fetch]\n", isolation=isolation)
     result = asyncio.run(ex.execute(
-        "try:\n    skills.wrap.fetch()\nexcept RuntimeError:\n    raise", timeout=5,
+        "try:\n    await skills.wrap.fetch()\nexcept RuntimeError:\n    raise", timeout=5,
     ))
     assert "fallback — raw-tools из replaces: srv.read_items" in result["error"]
 
@@ -96,7 +116,7 @@ def test_reraised_skill_error_keeps_hint(tmp_path, isolation):
 def test_next_block_raw_call_counts_as_recovered(tmp_path):
     recorder = _Recorder()
     ex = _executor(tmp_path, "replaces: [srv.read_items:fetch]\n", recorder=recorder)
-    asyncio.run(ex.execute("skills.wrap.fetch()", timeout=5, session_id="s1"))
+    asyncio.run(ex.execute("await skills.wrap.fetch()", timeout=5, session_id="s1"))
     ok = asyncio.run(ex.execute("await srv.read_items()", timeout=5, session_id="s1"))
     assert ok["success"] is True, ok["error"]
 
@@ -163,7 +183,7 @@ def test_caught_skill_error_has_no_fallback_field(tmp_path, isolation):
         tmp_path, "replaces: [srv.read_items:fetch]\n", recorder=recorder, isolation=isolation
     )
     asyncio.run(ex.execute(
-        "try:\n    skills.wrap.fetch()\nexcept RuntimeError:\n    pass",
+        "try:\n    await skills.wrap.fetch()\nexcept RuntimeError:\n    pass",
         timeout=5, session_id="s1",
     ))
     call = next(e for e in recorder.events if e["kind"] == "skill_call")
@@ -184,7 +204,7 @@ def test_fallback_share_ignores_non_fatal_failed_call():
 def test_raise_from_skill_error_keeps_hint(tmp_path, isolation):
     ex = _executor(tmp_path, "replaces: [srv.read_items:fetch]\n", isolation=isolation)
     result = asyncio.run(ex.execute(
-        "try:\n    skills.wrap.fetch()\nexcept RuntimeError as e:\n"
+        "try:\n    await skills.wrap.fetch()\nexcept RuntimeError as e:\n"
         "    raise ValueError('wrapped') from e",
         timeout=5,
     ))

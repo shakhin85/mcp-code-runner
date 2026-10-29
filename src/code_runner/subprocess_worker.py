@@ -50,7 +50,14 @@ from .executor import (
     make_safe_builtins,
 )
 from .restore import make_restore
-from .skills import SKILL_SERVERS, SkillLoader, SkillsNamespace, active_skill, mark_fatal
+from .skills import (
+    SKILL_SERVERS,
+    SkillLoader,
+    SkillsNamespace,
+    active_skill,
+    mark_fatal,
+    note_tool_call,
+)
 from .workspace import WorkspaceError, WorkspaceManager, safe_open
 
 # Env vars the child keeps; everything else (API keys, tokens, connection
@@ -129,6 +136,7 @@ class _RemoteProxy(_McpProxy):
 
     def _make(self, attr: str):
         async def call(**kwargs):
+            note_tool_call()
             return await self._rpc(self._py_name, attr, kwargs, self._skill_side)
         call.__name__ = attr
         return call
