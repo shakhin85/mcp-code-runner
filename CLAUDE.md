@@ -21,7 +21,8 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
   A skill that raises gets `HINT: … fallback — raw-tools из replaces: …` (SHA-523); its
   `fallback` field plus the next block's `ok_tools` give the `fallback.share` there.
   `PastFixIndex` (SHA-483, lazy, cached by mtime/size) pairs an error (class + tool) with the
-  next successful block of the session (`fix_line`, literals masked, ≤300) and appends one
+  next successful block of the session (`fix_line`: the new line sharing most names with the
+  failed line, none without a shared name; literals masked, ≤300) and appends one
   `HINT: в прошлый раз …` on a repeat; `summarize_errors` adds `repeat_error_share`.
 - `workspace.py` — injected `open()`: writes confined to `~/.cache/code-runner/workspace/<session_id>/` (relative paths), reads may also reach absolute paths under `CODE_RUNNER_READ_ROOTS` minus a secret deny-list. Text modes default to UTF-8.
 - `restore.py` — injected `restore(id, ...)`: lines or grep of a truncated block's full output (`out_<id>.txt`), built on the sandbox `open()`.
