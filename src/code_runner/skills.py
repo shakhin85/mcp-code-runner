@@ -185,6 +185,20 @@ active_skill: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "active_skill", default=None
 )
 
+# Tool calls made by the running skill call (SHA-523): a skill that raised
+# before its first one failed on its input, and its raw tools would not help.
+_tool_calls: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "_tool_calls", default=None
+)
+
+
+def note_tool_call() -> None:
+    """Count one proxied tool call against the running skill call, if any."""
+    counter = _tool_calls.get()
+    if counter is not None:
+        counter[0] += 1
+
+
 # Builtin name under which skills see the skill-side MCP proxies (SHA-502).
 # ~/.claude/lib/skill_ns.py resolves servers from it, never from user frames.
 SKILL_SERVERS = "_cr_servers"
@@ -210,11 +224,18 @@ def _with_outcome(
     """
     is_async = inspect.iscoroutinefunction(fn)
 
-    def outcome(ok: bool, start: float, exc: BaseException | None = None) -> None:
+    def outcome(
+        ok: bool, start: float, calls: int, exc: BaseException | None = None
+    ) -> None:
+        # A nested skill's calls are the outer skill's calls too.
+        outer = _tool_calls.get()
+        if outer is not None:
+            outer[0] += calls
         if call_log is not None:
             event: dict[str, Any] = {
                 "skill": name, "fn": fn_name, "success": ok,
                 "duration_ms": round((time.monotonic() - start) * 1000, 2),
+                "tool_calls": calls,
             }
             if exc is not None:
                 # Class name only: the message may hold a secret or untrusted text
@@ -226,32 +247,39 @@ def _with_outcome(
             call_log.append(event)
         record_outcome(skill_dir, ok=ok)
 
-    async def settle(coro: Any, start: float) -> Any:
+    async def settle(coro: Any, start: float, counter: list[int]) -> Any:
         token = active_skill.set(name)
+        calls_token = _tool_calls.set(counter)
         try:
             result = await coro
         except Exception as e:
-            outcome(False, start, e)
+            _tool_calls.reset(calls_token)
+            outcome(False, start, counter[0], e)
             raise
         finally:
             active_skill.reset(token)
-        outcome(True, start)
+        _tool_calls.reset(calls_token)
+        outcome(True, start, counter[0])
         return result
 
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         start = time.monotonic()
+        counter = [0]
         token = active_skill.set(name)
+        calls_token = _tool_calls.set(counter)
         try:
             result = fn(*args, **kwargs)
         except Exception as e:
-            outcome(False, start, e)
+            _tool_calls.reset(calls_token)
+            outcome(False, start, counter[0], e)
             raise
         finally:
             active_skill.reset(token)
+        _tool_calls.reset(calls_token)
         if is_async:
-            return settle(result, start)
-        outcome(True, start)
+            return settle(result, start, counter)
+        outcome(True, start, counter[0])
         return result
 
     return wrapper

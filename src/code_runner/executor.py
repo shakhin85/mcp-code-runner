@@ -54,7 +54,7 @@ from .metrics import (
     fix_fragment,
 )
 from .restore import make_restore, saved_output_name
-from .skills import SKILL_SERVERS, SkillsNamespace, active_skill, mark_fatal
+from .skills import SKILL_SERVERS, SkillsNamespace, active_skill, mark_fatal, note_tool_call
 from .sql_limit import inject_limit
 from .workspace import WorkspaceError, WorkspaceManager, safe_open, validate_session_id
 
@@ -1549,6 +1549,7 @@ class _ToolNamespace(_McpProxy):
         skill_side = self._skill_side
 
         async def wrapper(**kwargs):
+            note_tool_call()
             # SHA-123: deny-by-default gate on side-effecting tools — checked
             # before anything else in the call (no stats/recorder, no
             # downstream, no timeout block) so a refused call leaves no trace
@@ -2177,7 +2178,13 @@ class CodeExecutor:
             skill_calls = (drain() if drain else []) + (child_skill_calls or [])
             fallbacks = getattr(self.skills, "fallbacks", None) or {}
             for call in skill_calls:
-                if call.get("fatal") and call.get("skill") in fallbacks:
+                # SHA-523: no fallback for a skill that failed before its first
+                # tool call — the input is wrong, the raw tool would not help.
+                if (
+                    call.get("fatal")
+                    and call.get("tool_calls")
+                    and call.get("skill") in fallbacks
+                ):
                     call["fallback"] = list(fallbacks[call["skill"]])
             if not success and error:
                 error += _skill_fallback_hint(skill_calls)
