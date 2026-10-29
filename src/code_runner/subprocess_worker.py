@@ -37,6 +37,7 @@ from . import prelude as _prelude
 from .executor import (
     _FORMAT_HOOK,
     _JSON_WRAPPED,
+    _McpProxy,
     _RESULT_SENTINEL,
     _SAFE_ASYNCIO_WRAPPED,
     _SAFE_MODULES_WRAPPED,
@@ -114,7 +115,7 @@ def _make_remote_exc(type_name: str, msg: str) -> BaseException:
     return exc
 
 
-class _RemoteProxy:
+class _RemoteProxy(_McpProxy):
     """Stand-in for one MCP server: each tool becomes an async method that RPCs
     the real call back to the parent over the pipe."""
 

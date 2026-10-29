@@ -1236,7 +1236,7 @@ def _name_error_hint(exc: BaseException, namespace: dict[str, Any]) -> str:
     close = difflib.get_close_matches(missing, visible, n=3, cutoff=0.6)
     proxies = sorted(
         name for name, value in namespace.items()
-        if isinstance(value, _ToolNamespace)
+        if isinstance(value, _McpProxy)
     )
     parts = []
     if close:
@@ -1410,7 +1410,16 @@ class _DirectSessionCaller:
         return await self._session.call_tool(tool_name, arguments)
 
 
-class _ToolNamespace:
+class _McpProxy:
+    """Marker base of every MCP-server proxy in a sandbox namespace.
+
+    In-process the proxy is ``_ToolNamespace``; under subprocess isolation it is
+    the child's ``_RemoteProxy``. Code that asks "is this an MCP proxy" checks
+    this base, so neither path is invisible to it.
+    """
+
+
+class _ToolNamespace(_McpProxy):
     """Proxy object representing a single MCP server's tools in exec namespace."""
 
     def __init__(
