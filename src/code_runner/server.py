@@ -519,7 +519,8 @@ async def get_metrics(
         duration, output_bytes_raw/sent, truncated flag, tool_calls count,
         auto_limit_hits count, session_id.
         A success right after a failed block of the same session also carries
-        fix_line (first changed line, string literals masked, <=300 chars) —
+        fix_line (the new line sharing most names with the failed line; none
+        when no line shares a name; string literals masked, <=300 chars) —
         the source of the "HINT: в прошлый раз …" line on a repeated error.
       - "skill_call": one per `skills.<name>.<fn>` call (skill, fn, success,
         duration_ms, session_id). A failed call also carries `error`: the

@@ -191,7 +191,7 @@ def test_fix_line_is_short_and_has_no_secret(tmp_path, isolation):
     long_line = "total = " + " + ".join(["1"] * 400)
     first, fixed = _run(
         isolation, rec,
-        "raise ValueError('boom')",
+        "total = int('boom')",
         f"token = '{secret}'\n{long_line}",
         sid="priv",
     )
@@ -201,7 +201,7 @@ def test_fix_line_is_short_and_has_no_secret(tmp_path, isolation):
     events = [json.loads(ln) for ln in raw.splitlines()]
     fix = [e["fix_line"] for e in events if e.get("fix_line")]
     assert len(fix) == 1 and 0 < len(fix[0]) <= 300
-    (res,) = _run(isolation, rec, "raise ValueError('boom')", sid="priv-2")
+    (res,) = _run(isolation, rec, "total = int('boom')", sid="priv-2")
     assert secret not in res["error"]
     assert res["error"].count(MARK) == 1
 
@@ -258,3 +258,39 @@ def test_repeat_error_share_known_numbers():
 def test_repeat_error_share_empty_window():
     assert metrics.summarize_errors([])["repeat_error_share"] == 0.0
     assert metrics.summarize_errors([_ok("a")])["repeat_error_share"] == 0.0
+
+
+# --- фикс привязан к упавшей строке ------------------------------------------
+
+
+def _fixes(path):
+    events = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines()]
+    return [e["fix_line"] for e in events if e.get("fix_line")]
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_unrelated_next_block_records_no_fix(tmp_path, isolation):
+    path = tmp_path / "m.jsonl"
+    rec = MetricsRecorder(path, stderr=False)
+    failed, ok = _run(
+        isolation, rec,
+        "obj = 1\nif hasattr(obj, 'a'):\n    pass",
+        "probe = 2\nprint(str(probe)[:10])",
+        sid="unrel",
+    )
+    assert not failed["success"] and ok["success"], ok["error"]
+    assert _fixes(path) == []
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_fix_is_line_closest_to_failed_line(tmp_path, isolation):
+    path = tmp_path / "m.jsonl"
+    rec = MetricsRecorder(path, stderr=False)
+    failed, ok = _run(
+        isolation, rec,
+        "obj = 1\nif hasattr(obj, 'a'):\n    pass",
+        "w = 'x'\nobj = 1\nif obj == 1:\n    pass",
+        sid="close",
+    )
+    assert not failed["success"] and ok["success"], ok["error"]
+    assert _fixes(path) == ["if obj == 1:"]

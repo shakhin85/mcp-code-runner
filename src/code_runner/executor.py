@@ -624,7 +624,7 @@ def _dialect_for_server(server_name: str) -> str | None:
 class _SessionState:
     __slots__ = (
         "user_vars", "last_access", "blocks", "failed_block", "dropped", "failed_code",
-        "refused",
+        "failed_line", "refused",
     )
 
     def __init__(self) -> None:
@@ -638,6 +638,7 @@ class _SessionState:
         self.dropped: frozenset[str] = frozenset()
         # Код последнего упавшего блока: следующий успешный пишет fix_line (SHA-483).
         self.failed_code: str | None = None
+        self.failed_line: int | None = None
         # Отпечатки отказов гейта → (разрешения, текст отказа) — см. SideEffectGate (SHA-524).
         self.refused: dict[str, tuple[str, str]] = {}
 
@@ -2163,8 +2164,11 @@ class CodeExecutor:
             fix_line = None
             if state is not None:
                 if success and state.failed_code is not None:
-                    fix_line = fix_fragment(state.failed_code, source) or None
+                    fix_line = (
+                        fix_fragment(state.failed_code, source, state.failed_line) or None
+                    )
                 state.failed_code = None if success else source
+                state.failed_line = None if success else _error_line(error or "")
             if not success and error and self._past_fix is not None:
                 error += self._past_fix.hint(error)
             # SHA-484: per-function skill usage for the trim report. In-process

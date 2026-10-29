@@ -7,9 +7,11 @@ filtering (time/server/kind) so `get_metrics` MCP tool can surface recent
 activity without pulling the whole history.
 """
 
+import builtins
 import contextlib
 import hashlib
 import json
+import keyword
 import os
 import re
 import sys
@@ -73,12 +75,14 @@ def classify_error(error: str | None) -> str | None:
 
 # SHA-483: HINT с прошлым фиксом. Ключ ошибки — класс + tool (если ошибка пришла
 # из MCP-вызова) либо класс + сообщение исключения; фрагмент фикса — поле fix_line
-# следующего успешного блока сессии.
+# следующего успешного блока сессии, ближайшая к упавшей строке (fix_fragment).
 PAST_FIX_WINDOW_DAYS = 7
 PAST_FIX_MAX_CHARS = 300
 _TOOL_RE = re.compile(r"\b([A-Za-z_]\w*\.[A-Za-z_]\w*) returned an error:")
 _STRING_LITERAL_RE = re.compile(r"""(["'])(?:\\.|(?!\1).)*(?:\1|$)""")
 _DIGITS_RE = re.compile(r"\d+")
+_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+_COMMON_NAMES = frozenset(keyword.kwlist) | frozenset(dir(builtins))
 _MESSAGE_KEY_MAX = 200
 
 
@@ -107,17 +111,34 @@ def error_key(error: str | None) -> tuple[str, str, str] | None:
     return (cls, "", _message_key(error or ""))
 
 
-def fix_fragment(failed_code: str, fixed_code: str) -> str:
-    """Первая строка fixed_code, которой не было в failed_code, до 300 символов.
+def _names(line: str) -> set[str]:
+    """Имена строки кода без ключевых слов, builtins и содержимого строковых литералов."""
+    bare = _STRING_LITERAL_RE.sub("''", line)
+    return set(_IDENT_RE.findall(bare)) - _COMMON_NAMES
 
-    Строковые литералы заменены на '…': в metrics.jsonl не должны попадать
+
+def fix_fragment(failed_code: str, fixed_code: str, failed_line: int | None) -> str:
+    """Новая строка fixed_code с наибольшим числом общих имён с упавшей строкой, до 300 символов.
+
+    Упавшая строка неизвестна или общих имён нет — пусто: первая новая строка
+    следующего блока обычно чужая (новая переменная, print) и давала нерелевантный
+    HINT. Строковые литералы заменены на '…': в metrics.jsonl не должны попадать
     значения аргументов tool (токены, SQL, ключи).
     """
-    old = {ln.strip() for ln in failed_code.splitlines()}
-    lines = [ln.strip() for ln in fixed_code.splitlines() if ln.strip()]
-    line = next((ln for ln in lines if ln not in old), lines[0] if lines else "")
-    line = _STRING_LITERAL_RE.sub(lambda m: m.group(1) + "…" + m.group(1), line)
-    return line[:PAST_FIX_MAX_CHARS]
+    failed = failed_code.splitlines()
+    if failed_line is None or not 1 <= failed_line <= len(failed):
+        return ""
+    anchor = _names(failed[failed_line - 1])
+    old = {ln.strip() for ln in failed}
+    best, score = "", 0
+    for line in (ln.strip() for ln in fixed_code.splitlines()):
+        if not line or line in old:
+            continue
+        shared = len(anchor & _names(line))
+        if shared > score:
+            best, score = line, shared
+    best = _STRING_LITERAL_RE.sub(lambda m: m.group(1) + "…" + m.group(1), best)
+    return best[:PAST_FIX_MAX_CHARS]
 
 
 class PastFixIndex:
