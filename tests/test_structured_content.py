@@ -190,3 +190,21 @@ def test_structured_untrusted_string_is_tainted_as_returned(isolation):
     assert r["success"] is False
     assert "PermissionError" in r["error"] and "wigolo" in r["error"], r["error"]
     assert pool.sink.calls == []
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_raw_capped_structured_json_is_tainted(isolation):
+    # Over raw_cap the call returns the JSON dump as a string: its escaped "\n"
+    # never matches the raw leaves, so the dump itself must be recorded.
+    pool = _TaintPool()
+    ex = CodeExecutor(pool, isolation=isolation, mem_limit_mb=1024)
+    r = asyncio.run(ex.execute(
+        "s = await wigolo.fetch(url='u')\n"
+        "await forgetful.create_memory(title='t', content=s)",
+        timeout=10,
+        raw_cap=60,
+        allow_side_effects=["forgetful.create_memory"],
+    ))
+    assert r["success"] is False
+    assert "PermissionError" in r["error"] and "wigolo" in r["error"], r["error"]
+    assert pool.sink.calls == []

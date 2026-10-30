@@ -167,7 +167,8 @@ class PastFixIndex:
 
     def _build(self) -> dict[tuple[str, str, str], str]:
         since = (datetime.now(UTC) - timedelta(days=self._days)).strftime("%Y-%m-%dT%H:%M:%S")
-        pending: dict[str, set[tuple[str, str, str]]] = {}
+        # Только последняя ошибка сессии: fix_line привязан к её упавшей строке.
+        pending: dict[str, tuple[str, str, str]] = {}
         fixes: dict[tuple[str, str, str], str] = {}
         for ev in self._recorder.read(since=since, limit=0):
             sid = ev.get("session_id")
@@ -176,12 +177,14 @@ class PastFixIndex:
             if ev.get("success") is False:
                 key = error_key(ev.get("error"))
                 if key:
-                    pending.setdefault(sid, set()).add(key)
+                    pending[sid] = key
+                else:
+                    pending.pop(sid, None)
             elif ev.get("success") is True:
+                key = pending.pop(sid, None)
                 frag = ev.get("fix_line")
-                for key in pending.pop(sid, ()):
-                    if isinstance(frag, str) and frag:
-                        fixes[key] = frag
+                if key and isinstance(frag, str) and frag:
+                    fixes[key] = frag
         return fixes
 
     def hint(self, error: str | None) -> str:
