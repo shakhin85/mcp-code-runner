@@ -64,6 +64,25 @@ def _param_line(name: str, schema: dict, is_required: bool) -> tuple[str, str]:
     return sig, doc
 
 
+_RETURNS_MAX = 200
+
+
+def _returns_line(output_schema: dict | None) -> str | None:
+    """`# Returns: ...` for a tool with outputSchema; wrapped results show the inner type."""
+    if not output_schema:
+        return None
+    schema = output_schema
+    if schema.get("x-fastmcp-wrap-result"):
+        schema = (schema.get("properties") or {}).get("result") or {}
+    if schema.get("type") == "object" and schema.get("properties"):
+        text = _describe_object_fields(schema)
+    else:
+        text = json_type_to_py(schema)
+    if len(text) > _RETURNS_MAX:
+        text = text[: _RETURNS_MAX - 3] + "..."
+    return f"# Returns: {text}"
+
+
 def tool_to_stub(server_py_name: str, tool: Tool) -> str:
     """Generate a Python async function stub string with docs."""
     props: dict = {}
@@ -90,6 +109,9 @@ def tool_to_stub(server_py_name: str, tool: Tool) -> str:
     if doc_lines:
         lines.append("# Args:")
         lines.extend(doc_lines)
+    returns = _returns_line(tool.outputSchema)
+    if returns:
+        lines.append(returns)
     py_tool_name = tool.name.replace("-", "_")
     lines.append(f"result = await {server_py_name}.{py_tool_name}({params_str})")
 

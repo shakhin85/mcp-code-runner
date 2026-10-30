@@ -1547,6 +1547,8 @@ class _ToolNamespace(_McpProxy):
         replacements = self._replacements
         taint = self._taint
         skill_side = self._skill_side
+        out_schema = getattr(self._tools.get(tool_name), "outputSchema", None)
+        wrap_result = bool(isinstance(out_schema, dict) and out_schema.get("x-fastmcp-wrap-result"))
 
         async def wrapper(**kwargs):
             note_tool_call()
@@ -1631,6 +1633,14 @@ class _ToolNamespace(_McpProxy):
                 combined = "\n".join(texts)
                 if taint is not None:
                     taint.record(server, combined)
+                structured = getattr(result, "structuredContent", None)
+                if structured is not None and not getattr(result, "isError", False):
+                    # MCP 2025-06-18: typed result wins over the text copy.
+                    combined = json.dumps(structured, ensure_ascii=False, default=repr)
+                    # Taint sees the strings as user code gets them, not JSON-escaped.
+                    if taint is not None:
+                        for s in _arg_strings(structured):
+                            taint.record(server, s)
                 out_bytes = len(combined.encode("utf-8"))
                 # A tool reporting an error (MCP isError=True) carries the
                 # failure detail in `content`. Surface it as an exception so
@@ -1660,6 +1670,14 @@ class _ToolNamespace(_McpProxy):
                         f"kept first {raw_cap}. Returned as a TRUNCATED STRING (not parsed into "
                         "objects) — narrow columns, aggregate, or add LIMIT, then re-run.]"
                     )
+                if structured is not None and not getattr(result, "isError", False):
+                    value = structured
+                    if wrap_result and isinstance(value, dict) and "result" in value:
+                        value = value["result"]
+                    shape = _result_shape(value, limit_applied, self._auto_limit)
+                    if shape and self._stats is not None:
+                        self._stats[shape] = self._stats.get(shape, 0) + 1
+                    return value
                 stripped = combined.strip()
                 # Try JSON first (fast path, most MCP servers), then fall back to
                 # the safe Python-repr parser for servers like postgres that return
