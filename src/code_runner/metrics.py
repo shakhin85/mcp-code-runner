@@ -84,6 +84,10 @@ _DIGITS_RE = re.compile(r"\d+")
 _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
 _COMMON_NAMES = frozenset(keyword.kwlist) | frozenset(dir(builtins))
 _MESSAGE_KEY_MAX = 200
+# NameError чинит статический HINT executor'а (ростер прокси, dir/hasattr, переменная
+# прошлого блока). Имя в сообщении — переменная своей сессии: фикс `q` из чужой
+# сессии к ней не относится (за 7д до 2026-10-30 все 5 таких HINT были чужими).
+_NO_PAST_FIX_CLASSES = frozenset({"NameError"})
 
 
 def _message_key(text: str) -> str:
@@ -190,7 +194,7 @@ class PastFixIndex:
     def hint(self, error: str | None) -> str:
         """Одна строка HINT (с ведущим переводом строки) или пустая строка."""
         key = error_key(error)
-        if key is None:
+        if key is None or key[0] in _NO_PAST_FIX_CLASSES:
             return ""
         try:
             frag = self._load().get(key)

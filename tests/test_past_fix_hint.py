@@ -309,3 +309,11 @@ def test_unkeyed_failure_drops_earlier_error(tmp_path):
     """Последний упавший блок без ключа: fix_line его, а не ранней ошибки."""
     idx = _index(tmp_path, [_err("a", TOOL_ERR_A, 1), _err("a", "", 1), _ok("a", days_ago=1)])
     assert idx.hint(TOOL_ERR_A) == ""
+
+
+def test_name_error_gets_no_past_fix(tmp_path):
+    """NameError чинит статический HINT (ростер, dir/hasattr, переменная сессии);
+    фикс того же имени из чужой сессии к нему не относится — `q` там другой."""
+    err = "Traceback (most recent call last):\nNameError: name 'q' is not defined"
+    idx = _index(tmp_path, [_err("a", err, 1), _ok("a", days_ago=1)])
+    assert idx.hint(err) == ""
