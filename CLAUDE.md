@@ -139,7 +139,7 @@ matches (`restore.py`, SHA-482) — no downstream call is repeated.
 - **`replaces:`** — optional frontmatter key in a skill's `SKILL.md`: `replaces: [server.tool:fn, ...]` names the raw tools the skill supersedes and the function to call instead (without `:fn` the HINT names only `skills.<name>`). When the side-effect gate refuses one of them, its PermissionError starts with `используй skills.<name>.<fn>(...)`; the `allow_side_effects` line follows. Tools without `replaces:` keep the plain message.
 - **No-op import** — `import X` / `import X as Y` / `from X import a, b` of a module already in the namespace (`SAFE_MODULES` + `asyncio`) is rewritten to `Y = X` / `a = X.a` instead of `BlockedImport`; dotted, relative, `*`, `_`-names and any other module stay refused. The `_RestrictedModule` wrapper still guards the values.
 - **`dir`/`globals`/`locals`/`vars`** stay undefined; the NameError gets a HINT pointing to `list_available_tools` and `skills.sandbox_introspect.list_all()`.
-- **Skills** — drop a directory into `~/.claude/code-runner-skills/<name>/` containing `script.py` + `SKILL.md`; functions become `skills.<name>.<fn>` in the sandbox. Use `save_skill` MCP tool to create one from inside `execute_code`.
+- **Skills** — drop a directory into `~/.claude/code-runner-skills/<name>/` containing `script.py` + `SKILL.md`; functions become `skills.<name>.<fn>` in the sandbox. Use `save_skill` MCP tool to create one from inside `execute_code`; with `example="print(skills.<name>.f(...))"` it first runs the example against a staged copy (other skills symlinked) and refuses to write on failure — the old version stays live; on success the example lands in SKILL.md.
 
 ## Installing bundled skills
 

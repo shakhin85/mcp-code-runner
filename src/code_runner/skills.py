@@ -16,6 +16,7 @@ import contextvars
 import functools
 import inspect
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +45,8 @@ def validate_skill_name(name: str) -> None:
 
 
 def write_skill_files(
-    skills_dir: Path, name: str, code: str, description: str
+    skills_dir: Path, name: str, code: str, description: str,
+    example: str | None = None,
 ) -> Path:
     """Write a skill into <skills_dir>/<name>/. Returns the dir path.
 
@@ -64,6 +66,8 @@ def write_skill_files(
     target.mkdir(parents=True, exist_ok=True)
     script_path.write_text(code, encoding="utf-8")
     md = f"---\nname: {name}\ndescription: {description.strip()}\n---\n"
+    if example:
+        md += f"\n## Example\n\n```python\n{example.strip()}\n```\n"
     (target / "SKILL.md").write_text(md, encoding="utf-8")
     return target
 
@@ -103,6 +107,27 @@ def _parse_description(md_text: str) -> str:
         if line and not line.startswith("#"):
             return line
     return ""
+
+
+def stage_skills(
+    skills_dir: Path, name: str, code: str, description: str
+) -> tempfile.TemporaryDirectory:
+    """Throwaway skills root for a trial run before save: the other skills
+    (symlinked) plus the new version of `name`. The live dir stays untouched
+    until the trial passes."""
+    tmp = tempfile.TemporaryDirectory(prefix="skill-stage-")
+    root = Path(tmp.name)
+    live = Path(skills_dir)
+    if live.is_dir():
+        for child in live.iterdir():
+            if child.is_dir() and child.name != name and not child.name.startswith("."):
+                (root / child.name).symlink_to(child.resolve())
+    try:
+        write_skill_files(root, name, code, description)
+    except Exception:
+        tmp.cleanup()
+        raise
+    return tmp
 
 
 class SkillLoader:
