@@ -70,3 +70,80 @@ def test_write_skill_files_rejects_invalid_syntax_before_writing(tmp_path):
         write_skill_files(tmp_path, "good", "this is not python!!!", "broken update")
     # Existing skill is unchanged
     assert (tmp_path / "good" / "script.py").read_text() == "def f(): return 1"
+
+
+# --- save_skill(example=): the example runs against the new version first ---
+
+import asyncio  # noqa: E402
+import sys  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from code_runner import server as server_mod  # noqa: E402
+from code_runner.executor import CodeExecutor  # noqa: E402
+
+ISOLATIONS = [
+    "inprocess",
+    pytest.param(
+        "subprocess",
+        marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only"),
+    ),
+]
+
+
+class _Pool:
+    sessions = {}
+    tools = {}
+
+
+def _ctx(tmp_path, monkeypatch, isolation):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    monkeypatch.setattr(server_mod, "SKILLS_DIR", skills_dir)
+    executor = CodeExecutor(_Pool(), isolation=isolation, mem_limit_mb=1024)
+    ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context={
+        "executor": executor, "skills_loader": SkillLoader(skills_dir),
+    }))
+    return ctx, skills_dir, executor
+
+
+def _save(ctx, name, code, example):
+    return asyncio.run(server_mod.save_skill(name, code, "d", ctx, example=example))
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_example_passes_skill_saved_with_example(tmp_path, monkeypatch, isolation):
+    ctx, skills_dir, executor = _ctx(tmp_path, monkeypatch, isolation)
+    msg = _save(ctx, "calc", "def inc(x):\n    return x + 1\n",
+                "print(skills.calc.inc(41))")
+    assert "example ok" in msg and "42" in msg
+    assert "skills.calc.inc(41)" in (skills_dir / "calc" / "SKILL.md").read_text()
+    out = asyncio.run(executor.execute("print(skills.calc.inc(1))", timeout=5))
+    assert out["success"] and out["output"].strip() == "2"
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_example_fails_skill_not_saved(tmp_path, monkeypatch, isolation):
+    ctx, skills_dir, _ = _ctx(tmp_path, monkeypatch, isolation)
+    with pytest.raises(ValueError, match="not saved: example failed"):
+        _save(ctx, "calc", "def inc(x):\n    return x - 1\n",
+              "assert skills.calc.inc(41) == 42")
+    assert not (skills_dir / "calc").exists()
+
+
+def test_failed_update_keeps_old_version_live(tmp_path, monkeypatch):
+    ctx, skills_dir, executor = _ctx(tmp_path, monkeypatch, "inprocess")
+    _save(ctx, "calc", "def inc(x):\n    return x + 1\n", "skills.calc.inc(1)")
+    with pytest.raises(ValueError):
+        _save(ctx, "calc", "def inc(x):\n    raise RuntimeError('v2')\n",
+              "skills.calc.inc(1)")
+    assert "x + 1" in (skills_dir / "calc" / "script.py").read_text()
+    out = asyncio.run(executor.execute("print(skills.calc.inc(1))", timeout=5))
+    assert out["output"].strip() == "2"
+
+
+def test_example_sees_other_skills(tmp_path, monkeypatch):
+    ctx, _, _ = _ctx(tmp_path, monkeypatch, "inprocess")
+    _save(ctx, "base", "def one():\n    return 1\n", None)
+    msg = _save(ctx, "calc", "def two():\n    return 2\n",
+                "print(skills.base.one() + skills.calc.two())")
+    assert "3" in msg

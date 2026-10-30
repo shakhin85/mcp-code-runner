@@ -37,7 +37,13 @@ from .metrics import (
 )
 from .project_pools import STARTUP_TIMEOUT, ProjectPoolRegistry, _PoolHost
 from .schema_gen import generate_server_overview, generate_stubs_for_server
-from .skills import SkillLoader, SkillsNamespace, SkillSpec, write_skill_files
+from .skills import (
+    SkillLoader,
+    SkillsNamespace,
+    SkillSpec,
+    stage_skills,
+    write_skill_files,
+)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -574,7 +580,9 @@ async def get_metrics(
 
 
 @mcp.tool()
-async def save_skill(name: str, code: str, description: str, ctx: Context) -> str:
+async def save_skill(
+    name: str, code: str, description: str, ctx: Context, example: str | None = None,
+) -> str:
     """
     Save a skill to ~/.claude/code-runner-skills/<name>/.
 
@@ -591,15 +599,35 @@ async def save_skill(name: str, code: str, description: str, ctx: Context) -> st
             must start with a letter (matches ^[a-z][a-z0-9_]{0,39}$).
         code: full Python source for script.py.
         description: one-sentence summary used in list_available_tools.
+        example: execute_code snippet that calls the new skill, e.g.
+            "print(skills.<name>.f(1))". It runs against the new version
+            before anything is written; if it fails the skill is NOT saved
+            and the error comes back. On success it is kept in SKILL.md.
     """
-    target = write_skill_files(SKILLS_DIR, name, code, description)
+    executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
+    trial_output = ""
+    if example:
+        with stage_skills(SKILLS_DIR, name, code, description) as root:
+            result = await executor.execute(
+                example,
+                skills=SkillsNamespace(SkillLoader(Path(root)).discover()),
+                extra_pool=await _project_pool(ctx, example),
+            )
+        if not result["success"]:
+            raise ValueError(
+                f"skill {name!r} not saved: example failed: {result['error']}"
+            )
+        trial_output = (result["output"] or "").rstrip()
+
+    target = write_skill_files(SKILLS_DIR, name, code, description, example)
 
     loader: SkillLoader = ctx.request_context.lifespan_context["skills_loader"]
-    new_ns = SkillsNamespace(loader.discover())
-    executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
-    executor.skills = new_ns
+    executor.skills = SkillsNamespace(loader.discover())
 
-    return f"Saved skill {name!r} to {target}"
+    saved = f"Saved skill {name!r} to {target}"
+    if example:
+        saved += "\nexample ok" + (f":\n{trial_output}" if trial_output else "")
+    return saved
 
 
 @mcp.tool()

@@ -2119,12 +2119,17 @@ class CodeExecutor:
         per_call_timeout: float = DEFAULT_PER_CALL_TIMEOUT,
         allow_side_effects: list[str] | None = None,
         allow_tainted: list[str] | None = None,
+        skills: Any = None,
     ) -> dict[str, Any]:
+        """`skills` replaces self.skills for this run only (save_skill trial)."""
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
         # MCP stdio case.
         async with self._exec_lock:
             self._extra_pool = extra_pool
+            own_skills = self.skills
+            if skills is not None:
+                self.skills = skills
             try:
                 return await self._execute_locked(
                     code, timeout, max_output_bytes, session_id, auto_limit, raw_cap,
@@ -2132,6 +2137,9 @@ class CodeExecutor:
                 )
             finally:
                 self._extra_pool = None
+                # A save_skill reload during the trial wins over the old set.
+                if skills is not None and self.skills is skills:
+                    self.skills = own_skills
 
     async def _execute_locked(
         self,

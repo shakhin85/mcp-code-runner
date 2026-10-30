@@ -5,7 +5,7 @@
 
 | # | arXiv | Название | Механизм | У нас нет / как сделать | Статус |
 |---|---|---|---|---|---|
-| 1 | 2305.16291 + 2309.17428 | Voyager; CRAFT | Скилл попадает в библиотеку только после self-verification / валидации и dedup | save_skill не прогоняет скилл. Фича: `save_skill(..., example="skills.x.f(...)")` выполняет пример в subprocess, при падении отказ; сохраняет example в SKILL.md. | нет |
+| 1 | 2305.16291 + 2309.17428 | Voyager; CRAFT | Скилл попадает в библиотеку только после self-verification / валидации и dedup | save_skill не прогоняет скилл. Фича: `save_skill(..., example="skills.x.f(...)")` выполняет пример в subprocess, при падении отказ; сохраняет example в SKILL.md. | да: save_skill(example=), dedup нет |
 | 2 | 2401.12869 + 2610.09832 | TroVE; SkillForge (lifecycle) | Периодическая обрезка тулбокса; состояния trial/active/stable/retired по fitness | Есть TRIAL/VERIFIED, нет retired и GC. Skill `skill_gc`: по metrics.jsonl найти скиллы с 0 вызовов за 30 дней или success<40%, переместить в `_archive/`. | частично: SHA-484 кандидаты в `get_metrics(skills=True)`, автоархива нет |
 | 3 | 2510.07768 | ToolLibGen | Кластеризация тулов + рефакторинг в агрегированные с ревью-агентом | Нет поиска дублей. Skill `skill_dupes`: сравнить сигнатуры+docstring (difflib/Jaccard), вернуть пары-кандидаты на слияние; слияние делает LLM вручную. | нет |
 | 4 | 2601.03509 + 2610.11781 | Programmatic Skill Network; Skill-V | Версии скиллов, rollback при регрессии, replay исторических вызовов как non-regression | save_skill перезаписывает без истории. Фича: `.versions/<n>/`, replay последних 5 успешных вызовов из calls.jsonl после обновления, при провале авто-откат. | нет |
@@ -27,7 +27,7 @@
 | 1 | Предупреждения о тихих сбоях в receipt (0 rows, LIMIT hit, truncated, all-None) | #9 | 4 | сделано |
 | 2 | Обратимое усечение вывода: полный текст в workspace + путь в хвосте | #6 | 3 | сделано: SHA-482 |
 | 3 | BM25-ранжирование в search_tools + частичное совпадение | #7 | 4 (+6 на dense/RRF) | сделано: BM25, dense/RRF нет |
-| 4 | Admission: `save_skill(example=)` + версии и auto-rollback по replay | #1, #4 | 8 | нет |
+| 4 | Admission: `save_skill(example=)` + версии и auto-rollback по replay | #1, #4 | 8 | частично: example= есть, версий и replay нет |
 | 5 | Автодетект повторяющегося кода -> HINT "save_skill?" | #5 | 8 | нет |
 
 Дальше по очереди: банк fix-эксемпляров (#10) 10 ч; skill_gc (#2) + skill_dupes (#3) 5 ч вместе; Landlock/seccomp (#11) 12 ч; hash-approval (#12) 5 ч.
