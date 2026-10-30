@@ -1631,12 +1631,16 @@ class _ToolNamespace(_McpProxy):
                     elif hasattr(content, "data"):
                         texts.append(json.dumps(content.data, ensure_ascii=False))
                 combined = "\n".join(texts)
+                if taint is not None:
+                    taint.record(server, combined)
                 structured = getattr(result, "structuredContent", None)
                 if structured is not None and not getattr(result, "isError", False):
                     # MCP 2025-06-18: typed result wins over the text copy.
                     combined = json.dumps(structured, ensure_ascii=False, default=repr)
-                if taint is not None:
-                    taint.record(server, combined)
+                    # Taint sees the strings as user code gets them, not JSON-escaped.
+                    if taint is not None:
+                        for s in _arg_strings(structured):
+                            taint.record(server, s)
                 out_bytes = len(combined.encode("utf-8"))
                 # A tool reporting an error (MCP isError=True) carries the
                 # failure detail in `content`. Surface it as an exception so

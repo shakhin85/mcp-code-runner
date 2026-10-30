@@ -151,3 +151,42 @@ def test_search_tools_renders_returns():
     )
     out = _search_tools_logic("count_rows", {"srv": [tool]}, {"srv": "srv"})
     assert "# Returns: {count: int}" in out
+
+
+class _TaintSession:
+    def __init__(self):
+        self.calls = []
+
+    async def call_tool(self, name, kwargs):
+        if name == "fetch":
+            # every line < TAINT_MIN_MATCH: each 20-char window crosses a "\n",
+            # which the JSON dump escapes — only raw-string taint catches it.
+            page = "\n".join(f"short line {i}" for i in range(6))
+            return _Result("TEXT-COPY-IGNORED", {"page": page})
+        self.calls.append((name, kwargs))
+        return _Result("ok")
+
+
+class _TaintPool:
+    def __init__(self):
+        self.sink = _TaintSession()
+        self.sessions = {"wigolo": _TaintSession(), "forgetful": self.sink}
+        self.tools = {
+            "wigolo": [Tool(name="fetch", inputSchema={"type": "object"})],
+            "forgetful": [Tool(name="create_memory", inputSchema={"type": "object"})],
+        }
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_structured_untrusted_string_is_tainted_as_returned(isolation):
+    pool = _TaintPool()
+    ex = CodeExecutor(pool, isolation=isolation, mem_limit_mb=1024)
+    r = asyncio.run(ex.execute(
+        "d = await wigolo.fetch(url='u')\n"
+        "await forgetful.create_memory(title='t', content=d['page'])",
+        timeout=10,
+        allow_side_effects=["forgetful.create_memory"],
+    ))
+    assert r["success"] is False
+    assert "PermissionError" in r["error"] and "wigolo" in r["error"], r["error"]
+    assert pool.sink.calls == []
