@@ -294,3 +294,18 @@ def test_fix_is_line_closest_to_failed_line(tmp_path, isolation):
     )
     assert not failed["success"] and ok["success"], ok["error"]
     assert _fixes(path) == ["if obj == 1:"]
+
+
+def test_fix_goes_only_to_last_error_of_session(tmp_path):
+    """fix_line привязан к последней упавшей строке: ранняя ошибка сессии его не получает."""
+    idx = _index(tmp_path, [
+        _err("a", TOOL_ERR_A, 1), _err("a", TOOL_ERR_B, 1), _ok("a", days_ago=1),
+    ])
+    assert idx.hint(TOOL_ERR_A) == ""
+    assert FIX in idx.hint(TOOL_ERR_B)
+
+
+def test_unkeyed_failure_drops_earlier_error(tmp_path):
+    """Последний упавший блок без ключа: fix_line его, а не ранней ошибки."""
+    idx = _index(tmp_path, [_err("a", TOOL_ERR_A, 1), _err("a", "", 1), _ok("a", days_ago=1)])
+    assert idx.hint(TOOL_ERR_A) == ""
