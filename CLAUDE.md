@@ -27,6 +27,7 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
   `HINT: в прошлый раз …` on a repeat; `summarize_errors` adds `repeat_error_share`.
 - `workspace.py` — injected `open()`: writes confined to `~/.cache/code-runner/workspace/<session_id>/` (relative paths), reads may also reach absolute paths under `CODE_RUNNER_READ_ROOTS` minus a secret deny-list. Text modes default to UTF-8.
 - `restore.py` — injected `restore(id, ...)`: lines or grep of a truncated block's full output (`out_<id>.txt`), built on the sandbox `open()`.
+- `repeat_pattern.py` — AST-форма успешного блока с tool-вызовами (литералы → плейсхолдер); 3-й повтор в сессии дописывает к выводу один `HINT: паттерн повторился 3x … save_skill` с черновиком `async def run(p0, …)` — менявшиеся литералы стали параметрами. Блоки с `skills.*` не считаются.
 - `skills.py` — discovers `~/.claude/code-runner-skills/<name>/`, exposes `skills.<name>.<fn>` proxy.
 
 ## Deployment
