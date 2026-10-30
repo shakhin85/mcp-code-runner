@@ -47,6 +47,24 @@ def test_description_falls_back_to_first_line_when_no_frontmatter(tmp_path):
     assert spec.description == "Just a paragraph describing it."
 
 
+def test_catalog_lists_only_functions_defined_in_skill(tmp_path):
+    # Imported names (Path, defaultdict, Optional) are callables in the module
+    # namespace but not the skill's API: the trim report counted them as unused.
+    skill_dir = tmp_path / "imp"
+    skill_dir.mkdir()
+    (skill_dir / "script.py").write_text(
+        "from collections import defaultdict\n"
+        "from pathlib import Path\n"
+        "from typing import Optional\n"
+        "def run(x: Optional[int] = None):\n"
+        "    return defaultdict(int), Path('.')\n"
+    )
+    (skill_dir / "SKILL.md").write_text("---\ndescription: x\n---")
+    ns = SkillsNamespace(SkillLoader(tmp_path).discover())
+    assert ns.catalog() == {"imp": ["run"]}
+    ns.imp.run()
+
+
 def test_namespace_calls_skill_function(tmp_path):
     loader = SkillLoader(FIXTURE_DIR)
     ns = SkillsNamespace(loader.discover())
