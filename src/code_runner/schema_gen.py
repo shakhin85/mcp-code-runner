@@ -68,7 +68,7 @@ _RETURNS_MAX = 200
 
 
 def _returns_line(output_schema: dict | None) -> str | None:
-    """`# Returns: ...` for a tool with outputSchema; FastMCP-wrapped results show the inner type."""
+    """`# Returns: ...` for a tool with outputSchema; wrapped results show the inner type."""
     if not output_schema:
         return None
     schema = output_schema
