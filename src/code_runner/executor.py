@@ -1637,8 +1637,10 @@ class _ToolNamespace(_McpProxy):
                 if structured is not None and not getattr(result, "isError", False):
                     # MCP 2025-06-18: typed result wins over the text copy.
                     combined = json.dumps(structured, ensure_ascii=False, default=repr)
-                    # Taint sees the strings as user code gets them, not JSON-escaped.
+                    # Taint sees both forms user code can get: the raw leaves
+                    # (the value) and the JSON dump (the RAW-CAP string).
                     if taint is not None:
+                        taint.record(server, combined)
                         for s in _arg_strings(structured):
                             taint.record(server, s)
                 out_bytes = len(combined.encode("utf-8"))
