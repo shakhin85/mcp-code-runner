@@ -44,7 +44,7 @@ from mcp import ClientSession
 from mcp.types import Tool
 
 from . import prelude as _prelude
-from . import secret_gate
+from . import repeat_pattern, secret_gate
 from .config_reader import server_name_to_py
 from .metrics import (
     MetricsRecorder,
@@ -624,7 +624,7 @@ def _dialect_for_server(server_name: str) -> str | None:
 class _SessionState:
     __slots__ = (
         "user_vars", "last_access", "blocks", "failed_block", "dropped", "failed_code",
-        "failed_line", "refused",
+        "failed_line", "refused", "patterns",
     )
 
     def __init__(self) -> None:
@@ -641,6 +641,21 @@ class _SessionState:
         self.failed_line: int | None = None
         # Отпечатки отказов гейта → (разрешения, текст отказа) — см. SideEffectGate (SHA-524).
         self.refused: dict[str, tuple[str, str]] = {}
+        # Форма успешного блока с tool-вызовами → (повторов, литералы первого) — см. repeat_pattern.
+        self.patterns: dict[str, tuple[int, list[Any]]] = {}
+
+
+def _repeat_pattern_hint(state: _SessionState, code: str) -> str:
+    """HINT save_skill на REPEAT_HINT_AT-м успешном блоке той же формы, один раз за сессию."""
+    key = repeat_pattern.pattern_key(code)
+    if key is None:
+        return ""
+    fp, literals = key
+    count, first = state.patterns.get(fp, (0, literals))
+    state.patterns[fp] = (count + 1, first)
+    if count + 1 != repeat_pattern.REPEAT_HINT_AT:
+        return ""
+    return repeat_pattern.hint(code, first, count + 1)
 
 
 def _truncate_output(output: str, max_bytes: int, saved_as: int | None = None) -> str:
@@ -2232,6 +2247,8 @@ class CodeExecutor:
                 except OSError:
                     saved_as = None
             truncated = _truncate_output(output, max_output_bytes, saved_as)
+            if state is not None and success and stats["tool_calls"]:
+                truncated += _repeat_pattern_hint(state, source)
             truncated = _append_cost_footer(
                 truncated, stats, elapsed_ms=(time.monotonic() - start_exec) * 1000
             )
