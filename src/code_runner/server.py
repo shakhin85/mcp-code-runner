@@ -214,6 +214,7 @@ def _overview_logic(
 
 
 SEARCH_DETAILS = ("name", "desc", "full")
+SEARCH_LEVELS = ("tools", "servers")
 SEARCH_LIMIT = 10
 _BM25_K1, _BM25_B = 1.2, 0.75
 _NAME_WEIGHT = 2.0
@@ -276,15 +277,67 @@ def _render_matches(py_name: str, tools: list[Tool], detail: str) -> str:
     return "\n".join(lines)
 
 
+def _rank_servers(
+    terms: list[str],
+    ranked: list[tuple[float, tuple[str, Tool]]],
+    tools_by_server: dict[str, list[Tool]],
+) -> str:
+    """Server-level answer: one line per server, best tool score plus a server-name hit."""
+    hits: dict[str, list[Tool]] = {}
+    best: dict[str, float] = {}
+    for score, (server_name, tool) in ranked:
+        hits.setdefault(server_name, []).append(tool)
+        best.setdefault(server_name, score)
+    names = list(tools_by_server)
+    name_scores = _bm25_scores(terms, [_tokens(server_name_to_py(n)) for n in names])
+    scored = sorted(
+        (
+            (best.get(name, 0.0) + _NAME_WEIGHT * name_score, name)
+            for name, name_score in zip(names, name_scores, strict=True)
+            if name in best or name_score
+        ),
+        reverse=True,
+    )
+    if not scored:
+        return ""
+    lines = []
+    for _, server_name in scored:
+        tool_hits = hits.get(server_name, [])
+        line = (
+            f"- {server_name_to_py(server_name)} "
+            f"({len(tools_by_server[server_name])} tools, {len(tool_hits)} match)"
+        )
+        top = [t.name.replace("-", "_") for t in tool_hits[:3]]
+        lines.append(f"{line}: {', '.join(top)}" if top else line)
+    py_best = server_name_to_py(scored[0][1])
+    lines.append(f'# next: search_tools(query, server="{py_best}") — tools of one server')
+    return "\n".join(lines)
+
+
 def _search_tools_logic(
     query: str,
     tools_by_server: dict[str, list[Tool]],
     py_name_map: dict[str, str],
     detail: str = "full",
+    level: str = "tools",
+    server: str | None = None,
 ) -> str:
     """Search tools by keyword. Extracted for testing."""
     if detail not in SEARCH_DETAILS:
         raise ValueError(f"detail must be one of {', '.join(SEARCH_DETAILS)}, got {detail!r}")
+    if level not in SEARCH_LEVELS:
+        raise ValueError(f"level must be one of {', '.join(SEARCH_LEVELS)}, got {level!r}")
+    if server is not None:
+        server_name = py_name_map.get(server, server)
+        if server_name not in tools_by_server:
+            available = ", ".join(sorted(py_name_map))
+            return f"Unknown server '{server}'. Available servers: {available}"
+        tools = tools_by_server[server_name]
+        if not query.strip():
+            # Full stubs of a whole server are a context bomb; stubs come from a query.
+            listing = "name" if detail == "name" else "desc"
+            return _render_matches(server_name_to_py(server_name), tools, listing)
+        tools_by_server = {server_name: tools}
     if not query.strip():
         return _overview_logic(tools_by_server, py_name_map)
 
@@ -302,6 +355,10 @@ def _search_tools_logic(
         reverse=True,
     )
 
+    if level == "servers":
+        servers = _rank_servers(terms, ranked, tools_by_server)
+        if servers:
+            return servers
     if not ranked:
         server_names = sorted(py_name_map.keys())
         return f"No tools found for '{query}'. Available servers: {', '.join(server_names)}"
@@ -386,7 +443,11 @@ async def list_available_tools(ctx: Context) -> str:
 
 @mcp.tool()
 async def search_tools(
-    query: str, ctx: Context, detail: Literal["name", "desc", "full"] = "full"
+    query: str,
+    ctx: Context,
+    detail: Literal["name", "desc", "full"] = "full",
+    level: Literal["tools", "servers"] = "tools",
+    server: str | None = None,
 ) -> str:
     """
     Search for MCP tools by keyword. Returns Python stubs for matching tools.
@@ -398,10 +459,17 @@ async def search_tools(
         detail: "name" — only `server.tool` refs; "desc" — refs plus the first
                description line; "full" (default) — full stubs with arguments.
                Broad query → start with "name", then "full" on the narrowed one.
+        level: "tools" (default) — matching tools; "servers" — one line per matching
+               server (tool count, match count, top tools), no stubs. Unsure which
+               server owns the capability → "servers" first, then `server=`.
+        server: restrict the search to one server (py or original name). Empty
+               query lists the whole server as refs ("desc"; "name" keeps refs only).
     """
     pool: MCPClientPool = ctx.request_context.lifespan_context["pool"]
     py_name_map, tools_by_server = await _merged_views(ctx, pool)
-    return _search_tools_logic(query, tools_by_server, py_name_map, detail)
+    return _search_tools_logic(
+        query, tools_by_server, py_name_map, detail, level, server
+    )
 
 
 @mcp.tool()
