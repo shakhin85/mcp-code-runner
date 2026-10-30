@@ -391,7 +391,11 @@ class SkillsNamespace:
         # Shared so a single bind() reaches every skill at lookup time.
         self._shared_builtins: dict[str, Any] = dict(_builtins.__dict__)
         for name, spec in specs.items():
-            module_ns: dict[str, Any] = {"__builtins__": self._shared_builtins}
+            module_name = f"code_runner_skill_{name}"
+            module_ns: dict[str, Any] = {
+                "__builtins__": self._shared_builtins,
+                "__name__": module_name,
+            }
             try:
                 code = compile(
                     spec.source, str(spec.path / "script.py"), "exec"
@@ -400,9 +404,12 @@ class SkillsNamespace:
             except Exception as e:
                 self._proxies[name] = _BrokenSkill(name, e)
                 continue
+            # Only what script.py defines: imported names (Path, Optional, ...)
+            # are callable too, but they are not the skill's API.
             callables = {
                 k: v for k, v in module_ns.items()
                 if callable(v) and not k.startswith("_")
+                and getattr(v, "__module__", None) == module_name
             }
             self._proxies[name] = SkillProxy(
                 name, callables, spec.path, self._call_log
