@@ -37,23 +37,23 @@
 
 Уже покрыто (не предлагать как новое): `execute_code` как единственный tool + MCP-прокси; persist `session_id`; AST + SAFE_BUILTINS; subprocess/rlimit, credentials не в child; SIGALRM; truncation + `out_<block>.txt`; auto-LIMIT; workspace `open()` + deny-list; `search_tools` BM25 + stubs; `list_available_tools`; skills/`save_skill`/`replaces:` HINT; side-effect gate; квитанция raw→context; тихие сбои (0 rows / LIMIT / all-None); JSONL metrics + classify_error; error HINTs; no-op import; `calls.jsonl`; per-call timeout downstream.
 
-| # | Идея | Статья | Что даёт | Трудоёмкость | Приоритет | Статус у нас |
-|---|---|---|---|---|---|---|
-| 1 | Session-level **observation masking**: в контексте агента держать raw только последних K tool-output; старше — одна строка «masked, see workspace» | 2508.21433 | токены: ~½ vs raw, качество ≈ LLM-summary | 1–2 дня | **P0** | per-call truncation есть; masking истории сессии нет |
-| 2 | **Обратимое сжатие** DTOC: полный дамп в workspace, в ответе placeholder + `restore(id)` | 2609.26121 | −10–13% input tokens, до −32% steps на сильных моделях; без irreversibility | 2–3 дня | **P0** | `out_*.txt` уже пишет полный вывод; нет placeholder/restore API |
-| 3 | **Active discovery по умолчанию**: namespace без полного dump stubs; агент зовёт `search_tools` / `request_tool` | 2506.01056 | −98% tool-схем на APIBank | 2–4 дня | **P0** | `search_tools` есть, но часто льют `list_available_tools` целиком |
-| 4 | **Lazy schema**: 1-line summary в пуле, полный JSON/stub только top-k | 2604.21816 | −95% tool-токенов в их симуляции (47.3k→2.4k); e2e — проекция | 1–2 дня | **P0** | stubs отдаются целиком |
-| 5 | **Taint/capability** на результаты tools: tainted SQL/HTTP не может быть аргументом write-tool без `allow_side_effects` | 2503.18813 | 77% задач с provable security (плата: −7 pp utility) | 1–2 недели | **P0** | side-effect gate бинарный; taint потока данных нет |
-| 6 | Санитайз **error/traceback** как untrusted (exception-mediated injection) | 2602.15945 | закрывает класс атак CE-MCP; токенов мало, безопасность | 1–2 дня | **P0** | `MAX_ERROR_BYTES` режет размер, не taint |
-| 7 | **Grow+trim skills**: после `save_skill` — periodic prune по usage/fail-rate | 2401.12869, 2305.16291 | TroVE: toolbox −79–98%; Voyager: 3.3× items | 2–3 дня | **P1** | `save_skill` есть, trim нет |
-| 8 | **Error-experience retrieve** в HINT: из JSONL metrics похожий traceback → фикс | 2507.06229, 2304.05128 | Agent KB +18.7 pp pass@3; Self-Debug +2–12% | 3–5 дней | **P1** | classify_error + HINT есть; retrieval чужих траекторий нет |
-| 9 | **Иерархический BM25/embedding** (server → tool → param), не плоский список | 2402.04253, 2305.15334 | AnyTool +35.4% vs ToolLLM | 2–3 дня | **P1** | плоский BM25 |
-| 10 | Hybrid masking+лёгкий summary только длинных таблиц | 2508.21433 | ещё −7% vs masking, −11% vs LLM-summary | 1 день после #1 | **P1** | нет |
-| 11 | Скан **описаний tools** на injection (MSB: name-collision, preference, prompt-in-schema) | 2510.15994 | качество/безопасность каталога; 12 типов атак | 2–3 дня | **P1** | схемы проксируются as-is |
-| 12 | `asyncio.gather` helper + явный parallel fan-out в stub-доке | 2608.06370 | PTC стабилен при context rot (−2.3% у JSON) | 0.5–1 день | **P2** | await уже есть |
-| 13 | Не внедрять ToolGen-токены в модель | 2410.03439 | для MCP-сервера слой не тот; NDCG 89 vs 29 — ценой finetune 47k tokens | 0 | **P2 / не делать** | n/a |
-| 14 | Tiered-risk вместо полного dual-LLM CaMeL | 2505.22852 | dual-LLM дорог; screening+audit дешевле | 3–5 дней | **P2** | нет |
-| 15 | Не форсировать catalog-first progressive disclosure | 2607.04576 | способный агент и так не грузит индекс; force-catalog не доказал quality | 0 | **не делать** | search_tools уже opt-in |
+| # | Идея | Статья | Что даёт | Трудоёмкость | Приоритет | Статус у нас | Статус |
+|---|---|---|---|---|---|---|---|
+| 1 | Session-level **observation masking**: в контексте агента держать raw только последних K tool-output; старше — одна строка «masked, see workspace» | 2508.21433 | токены: ~½ vs raw, качество ≈ LLM-summary | 1–2 дня | **P0** | per-call truncation есть; masking истории сессии нет | нет |
+| 2 | **Обратимое сжатие** DTOC: полный дамп в workspace, в ответе placeholder + `restore(id)` | 2609.26121 | −10–13% input tokens, до −32% steps на сильных моделях; без irreversibility | 2–3 дня | **P0** | `out_*.txt` уже пишет полный вывод; нет placeholder/restore API | сделано: SHA-482 |
+| 3 | **Active discovery по умолчанию**: namespace без полного dump stubs; агент зовёт `search_tools` / `request_tool` | 2506.01056 | −98% tool-схем на APIBank | 2–4 дня | **P0** | `search_tools` есть, но часто льют `list_available_tools` целиком | нет |
+| 4 | **Lazy schema**: 1-line summary в пуле, полный JSON/stub только top-k | 2604.21816 | −95% tool-токенов в их симуляции (47.3k→2.4k); e2e — проекция | 1–2 дня | **P0** | stubs отдаются целиком | частично: `search_tools(detail=name/desc)` |
+| 5 | **Taint/capability** на результаты tools: tainted SQL/HTTP не может быть аргументом write-tool без `allow_side_effects` | 2503.18813 | 77% задач с provable security (плата: −7 pp utility) | 1–2 недели | **P0** | side-effect gate бинарный; taint потока данных нет | сделано: SHA-481 |
+| 6 | Санитайз **error/traceback** как untrusted (exception-mediated injection) | 2602.15945 | закрывает класс атак CE-MCP; токенов мало, безопасность | 1–2 дня | **P0** | `MAX_ERROR_BYTES` режет размер, не taint | сделано: SHA-480 |
+| 7 | **Grow+trim skills**: после `save_skill` — periodic prune по usage/fail-rate | 2401.12869, 2305.16291 | TroVE: toolbox −79–98%; Voyager: 3.3× items | 2–3 дня | **P1** | `save_skill` есть, trim нет | частично: SHA-484 кандидаты, автоархива нет |
+| 8 | **Error-experience retrieve** в HINT: из JSONL metrics похожий traceback → фикс | 2507.06229, 2304.05128 | Agent KB +18.7 pp pass@3; Self-Debug +2–12% | 3–5 дней | **P1** | classify_error + HINT есть; retrieval чужих траекторий нет | сделано: SHA-483 `PastFixIndex` |
+| 9 | **Иерархический BM25/embedding** (server → tool → param), не плоский список | 2402.04253, 2305.15334 | AnyTool +35.4% vs ToolLLM | 2–3 дня | **P1** | плоский BM25 | нет |
+| 10 | Hybrid masking+лёгкий summary только длинных таблиц | 2508.21433 | ещё −7% vs masking, −11% vs LLM-summary | 1 день после #1 | **P1** | нет | нет |
+| 11 | Скан **описаний tools** на injection (MSB: name-collision, preference, prompt-in-schema) | 2510.15994 | качество/безопасность каталога; 12 типов атак | 2–3 дня | **P1** | схемы проксируются as-is | нет |
+| 12 | `asyncio.gather` helper + явный parallel fan-out в stub-доке | 2608.06370 | PTC стабилен при context rot (−2.3% у JSON) | 0.5–1 день | **P2** | await уже есть | нет |
+| 13 | Не внедрять ToolGen-токены в модель | 2410.03439 | для MCP-сервера слой не тот; NDCG 89 vs 29 — ценой finetune 47k tokens | 0 | **P2 / не делать** | n/a | не делать |
+| 14 | Tiered-risk вместо полного dual-LLM CaMeL | 2505.22852 | dual-LLM дорог; screening+audit дешевле | 3–5 дней | **P2** | нет | нет |
+| 15 | Не форсировать catalog-first progressive disclosure | 2607.04576 | способный агент и так не грузит индекс; force-catalog не доказал quality | 0 | **не делать** | search_tools уже opt-in | не делать |
 
 ---
 
