@@ -274,7 +274,7 @@ def test_unrelated_next_block_records_no_fix(tmp_path, isolation):
     rec = MetricsRecorder(path, stderr=False)
     failed, ok = _run(
         isolation, rec,
-        "obj = 1\nif hasattr(obj, 'a'):\n    pass",
+        "obj = 1\nif obj.a:\n    pass",
         "probe = 2\nprint(str(probe)[:10])",
         sid="unrel",
     )
@@ -288,7 +288,7 @@ def test_fix_is_line_closest_to_failed_line(tmp_path, isolation):
     rec = MetricsRecorder(path, stderr=False)
     failed, ok = _run(
         isolation, rec,
-        "obj = 1\nif hasattr(obj, 'a'):\n    pass",
+        "obj = 1\nif obj.a:\n    pass",
         "w = 'x'\nobj = 1\nif obj == 1:\n    pass",
         sid="close",
     )

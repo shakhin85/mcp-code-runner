@@ -73,9 +73,15 @@ SAFE_BUILTINS = {
     "ZeroDivisionError", "AssertionError", "NotImplementedError",
     # Raised by the tool proxy itself: side-effect gate / per-call deadline.
     "PermissionError", "TimeoutError",
+    # Hierarchy roots and I/O/decoding errors that ordinary handlers name.
+    # BaseException adds nothing a bare `except:` (allowed) can't already catch.
+    "BaseException", "ArithmeticError", "LookupError", "OverflowError",
+    "OSError", "FileNotFoundError", "ConnectionError",
+    "UnicodeError", "UnicodeDecodeError", "UnicodeEncodeError",
     # DELIBERATELY EXCLUDED (sandbox escape via runtime-string dunder access,
-    # which bypasses the AST dunder guard): getattr, hasattr, setattr, delattr,
+    # which bypasses the AST dunder guard): getattr, setattr, delattr,
     # vars, globals, locals, dir, eval, exec, compile, open, __import__, input.
+    # hasattr is exposed as _safe_hasattr: the same name check as the AST guard.
 }
 
 # Modules that C code of SAFE_MODULES imports at call time through the caller's
@@ -98,7 +104,20 @@ def make_safe_builtins() -> dict[str, Any]:
     # Server-side use of getattr/hasattr to build whitelist — NOT exposed to user sandbox
     safe = {name: getattr(builtins, name) for name in SAFE_BUILTINS if hasattr(builtins, name)}
     safe["__import__"] = _c_level_import
+    safe["hasattr"] = _safe_hasattr
     return safe
+
+
+def _safe_hasattr(obj: Any, name: str) -> bool:
+    """hasattr with the AST attribute rule applied to the runtime string.
+
+    Raw hasattr would let `hasattr(x, "_session")` probe what `x._session`
+    is refused for; the answer is only a bool, but the rule stays one rule.
+    """
+    if not isinstance(name, str):
+        raise TypeError("hasattr(): attribute name must be string")
+    _check_attr_name(name)
+    return hasattr(obj, name)
 
 # Safe asyncio subset — no subprocess access
 _SAFE_ASYNCIO = types.ModuleType("asyncio")
@@ -1007,7 +1026,15 @@ def validate_code(code: str) -> None:
             preloaded = _PRELOADED_MODULES
             already = [n for n in names if n.split(".")[0] in preloaded]
             hint = ""
-            if already:
+            if "inspect" in names:
+                # 4 of 9 BlockedImport over 2026-10-30..11-06, each from a
+                # different session: the caller wants a signature, not the module.
+                hint = (
+                    " — сигнатура skills-функции: skills.sandbox_introspect.probe("
+                    "'<skill>.<fn>'), список — skills.sandbox_introspect.list_all(); "
+                    "сигнатура MCP-тула — MCP-тул search_tools (вне execute_code)"
+                )
+            elif already:
                 hint = (
                     f" — {', '.join(already)} уже preloaded в sandbox: "
                     f"убери import и используй напрямую (top-level await поддержан)"
@@ -1228,7 +1255,7 @@ def _signature_hint(exc: BaseException, skills: "SkillsNamespace | None") -> str
 
 _INTROSPECTION_NAMES = frozenset({"dir", "globals", "locals", "vars"})
 _NAME_ERROR_RE = re.compile(r"name '([^']+)' is not defined")
-_ATTR_PROBE_NAMES = frozenset({"getattr", "hasattr", "setattr", "delattr"})
+_ATTR_PROBE_NAMES = frozenset({"getattr", "setattr", "delattr"})
 # Claude Code spells a tool mcp__<server>__<tool>; the sandbox object is <server>.
 _CC_TOOL_NAME_RE = re.compile(r"mcp__(\w+?)__(\w+)$")
 

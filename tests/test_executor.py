@@ -175,9 +175,23 @@ class TestSandboxNamespace:
         assert result["success"] is False
 
     def test_reflection_builtins_stay_blocked(self, executor):
-        for name in ("getattr", "setattr", "hasattr", "vars", "globals", "locals", "dir"):
+        for name in ("getattr", "setattr", "vars", "globals", "locals", "dir"):
             result = asyncio.run(executor.execute(f"{name}"))
             assert result["success"] is False, f"{name} must stay blocked"
+
+    def test_hasattr_answers_public_names(self, executor):
+        result = asyncio.run(executor.execute(
+            "print(hasattr(1, 'real'), hasattr({}, 'nope'))"
+        ))
+        assert result["success"] is True, result["error"]
+        assert "True False" in result["output"]
+
+    @pytest.mark.parametrize("name", ["_session", "__class__", "gi_frame"])
+    def test_hasattr_refuses_names_the_ast_guard_refuses(self, executor, name):
+        # SECURITY: the runtime string gets the same rule as `x.attr` in source.
+        result = asyncio.run(executor.execute(f"hasattr(1, '{name}')"))
+        assert result["success"] is False
+        assert "not allowed" in result["error"]
 
     def test_datetime_available(self, executor):
         result = asyncio.run(executor.execute(

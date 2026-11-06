@@ -111,11 +111,42 @@ def test_await_sync_skill_hint(tmp_path, isolation):
 
 
 @pytest.mark.parametrize("isolation", ISOLATIONS)
-def test_hasattr_hint(isolation):
-    r = _run("print(hasattr({}, 'a'))", isolation)
+def test_hasattr_works_and_keeps_private_rule(isolation):
+    """3 NameError на hasattr за 2026-10-30..11-06: HINT не останавливал вызов."""
+    r = _run("print(hasattr({}, 'get'))", isolation)
+    assert r["success"] is True, r["error"]
+    assert "True" in r["output"]
+    r = _run("hasattr({}, '_x')", isolation)
     assert r["success"] is False
-    assert "hasattr() в песочнице недоступен" in r["error"]
-    assert "d.get('k')" in r["error"]
+    assert "private attribute access is not allowed" in r["error"]
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_getattr_hint_stays(isolation):
+    r = _run("getattr({}, 'a')", isolation)
+    assert r["success"] is False
+    assert "getattr() в песочнице недоступен" in r["error"]
+
+
+@pytest.mark.parametrize("isolation", ISOLATIONS)
+def test_common_exception_classes_available(isolation):
+    code = (
+        "for cls in (BaseException, OSError, LookupError, UnicodeDecodeError):\n"
+        "    try:\n"
+        "        raise KeyError('k') if cls is LookupError else ValueError('v')\n"
+        "    except (cls, ValueError) as e:\n"
+        "        print(type(e).__name__)"
+    )
+    r = _run(code, isolation)
+    assert r["success"] is True, r["error"]
+    assert r["output"].split() == ["ValueError", "ValueError", "KeyError", "ValueError"]
+
+
+def test_import_inspect_points_to_signature_tools():
+    r = _run("import inspect", "inprocess")
+    assert r["success"] is False
+    assert "skills.sandbox_introspect.probe(" in r["error"]
+    assert "search_tools" in r["error"]
 
 
 # --- hole 7: json.loads on an already-parsed proxy result --------------------
