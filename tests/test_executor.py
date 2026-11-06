@@ -193,6 +193,16 @@ class TestSandboxNamespace:
         assert result["success"] is False
         assert "not allowed" in result["error"]
 
+    def test_hasattr_refuses_str_subclass(self, executor):
+        # SECURITY: overridden startswith must not slip a private name past the check.
+        code = (
+            "S = type('S', (str,), {'startswith': lambda self, *a: False})\n"
+            "hasattr(1, S('_session'))"
+        )
+        result = asyncio.run(executor.execute(code))
+        assert result["success"] is False
+        assert "plain str" in result["error"]
+
     def test_datetime_available(self, executor):
         result = asyncio.run(executor.execute(
             "d = datetime.date(2026, 4, 10)\nprint(d.isoformat())"

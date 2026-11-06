@@ -114,8 +114,10 @@ def _safe_hasattr(obj: Any, name: str) -> bool:
     Raw hasattr would let `hasattr(x, "_session")` probe what `x._session`
     is refused for; the answer is only a bool, but the rule stays one rule.
     """
-    if not isinstance(name, str):
-        raise TypeError("hasattr(): attribute name must be string")
+    # Exact str: a subclass can override startswith/endswith and pass the
+    # check while hasattr still sees the real `_session`.
+    if type(name) is not str:
+        raise TypeError("hasattr(): attribute name must be a plain str")
     _check_attr_name(name)
     return hasattr(obj, name)
 
