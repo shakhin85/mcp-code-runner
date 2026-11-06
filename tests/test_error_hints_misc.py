@@ -145,7 +145,7 @@ def test_common_exception_classes_available(isolation):
 def test_import_inspect_points_to_signature_tools():
     r = _run("import inspect", "inprocess")
     assert r["success"] is False
-    assert "skills.sandbox_introspect.probe(" in r["error"]
+    assert "skills.sandbox_introspect.probe('skills.<skill>.<fn>')" in r["error"]
     assert "search_tools" in r["error"]
 
 

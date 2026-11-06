@@ -1031,7 +1031,7 @@ def validate_code(code: str) -> None:
                 # different session: the caller wants a signature, not the module.
                 hint = (
                     " — сигнатура skills-функции: skills.sandbox_introspect.probe("
-                    "'<skill>.<fn>'), список — skills.sandbox_introspect.list_all(); "
+                    "'skills.<skill>.<fn>'), список — skills.sandbox_introspect.list_all(); "
                     "сигнатура MCP-тула — MCP-тул search_tools (вне execute_code)"
                 )
             elif already:
