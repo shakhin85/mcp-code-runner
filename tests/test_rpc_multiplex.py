@@ -219,3 +219,69 @@ def test_parent_reader_failure_ends_run_with_named_error(monkeypatch):
     assert result["success"] is False
     assert "isolation pipe reader failed: ValueError: boom" in result["error"], result
     assert wall < 8, wall
+
+
+def test_handlers_running_at_once_are_capped_and_all_calls_complete(monkeypatch):
+    from code_runner.executor import RPC_MAX_INFLIGHT
+
+    state = {"running": 0, "peak": 0}
+    orig = CodeExecutor._build_proxies
+
+    def build(self, *a, **kw):
+        proxies, skill_proxies = orig(self, *a, **kw)
+        for side in (proxies, skill_proxies):
+            async def get(**kwargs):
+                state["running"] += 1
+                state["peak"] = max(state["peak"], state["running"])
+                try:
+                    await asyncio.sleep(0.05)
+                    return f"ok-{kwargs['n']}"
+                finally:
+                    state["running"] -= 1
+
+            side["srv"].srv_get = get
+        return proxies, skill_proxies
+
+    monkeypatch.setattr(CodeExecutor, "_build_proxies", build)
+    code = (
+        "r = await asyncio.gather(*[srv.srv_get(n=i) for i in range(50)])\n"
+        "print(r == [f'ok-{i}' for i in range(50)])\n"
+    )
+    result, _ = _run(code)
+    assert result["success"] is True, result
+    assert "True" in result["output"], result["output"]
+    assert state["peak"] == RPC_MAX_INFLIGHT, state
+
+
+def test_slow_send_does_not_block_the_parent_loop(monkeypatch):
+    import threading
+    from multiprocessing import connection
+
+    started, release = threading.Event(), threading.Event()
+    seen = {}
+    real_send = connection.Connection.send
+
+    def slow_send(self, obj):
+        if not started.is_set():
+            started.set()
+            seen["released"] = release.wait(timeout=5)  # only the loop can set it
+        real_send(self, obj)
+
+    monkeypatch.setattr(connection.Connection, "send", slow_send)
+
+    async def ticker():
+        while not started.is_set():
+            await asyncio.sleep(0.001)
+        for _ in range(5):  # loop progress while the first send is stuck
+            await asyncio.sleep(0.001)
+        release.set()
+
+    async def main():
+        run = _executor().execute("print(await srv.srv_get(n=1, delay=0))\n", timeout=15)
+        result, _ = await asyncio.gather(run, ticker())
+        return result
+
+    result = asyncio.run(main())
+    assert seen["released"] is True, "loop was blocked inside send"
+    assert result["success"] is True, result
+    assert "ok-1" in result["output"]
