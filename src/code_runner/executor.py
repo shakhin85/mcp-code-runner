@@ -2190,35 +2190,48 @@ class CodeExecutor:
             except (EOFError, OSError):
                 return _EOF
 
+        async def _handle(body: tuple) -> None:
+            req_id, py_server, tool_attr, kwargs, skill_name, skill_side = body
+            token = active_skill.set(skill_name)
+            # skill_side is set only by the child's skill-side proxies
+            # (SHA-502); user code there reaches only the plain ones.
+            side = skill_proxies if skill_side else proxies
+            try:
+                wrapper = getattr(side[py_server], tool_attr)
+                value = await wrapper(**kwargs)
+                reply = ("resp", (req_id, "ok", value))
+            # Exception, не BaseException: CancelledError от общего
+            # wait_for обязан пройти наверх, иначе отмена глоталась,
+            # ошибка уходила в child, и таймаут execute_code не срабатывал.
+            except Exception as e:
+                reply = ("resp", (req_id, "err", (type(e).__name__, str(e))))
+            finally:
+                active_skill.reset(token)
+            # send is synchronous on the loop thread: replies never interleave.
+            with contextlib.suppress(OSError):  # child is gone; _serve sees EOF
+                parent_conn.send(reply)
+
         async def _serve() -> dict[str, Any]:
-            while True:
-                msg = await loop.run_in_executor(None, _recv)
-                if msg is _EOF:
-                    return {
-                        "success": False, "output": "",
-                        "error": "isolation worker died before returning a result",
-                        "user_vars": None,
-                    }
-                tag, body = msg
-                if tag == "call":
-                    req_id, py_server, tool_attr, kwargs, skill_name, skill_side = body
-                    token = active_skill.set(skill_name)
-                    # skill_side is set only by the child's skill-side proxies
-                    # (SHA-502); user code there reaches only the plain ones.
-                    side = skill_proxies if skill_side else proxies
-                    try:
-                        wrapper = getattr(side[py_server], tool_attr)
-                        value = await wrapper(**kwargs)
-                        parent_conn.send(("resp", (req_id, "ok", value)))
-                    # Exception, не BaseException: CancelledError от общего
-                    # wait_for обязан пройти наверх, иначе отмена глоталась,
-                    # ошибка уходила в child, и таймаут execute_code не срабатывал.
-                    except Exception as e:
-                        parent_conn.send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
-                    finally:
-                        active_skill.reset(token)
-                elif tag == "done":
-                    return body
+            handlers: set[asyncio.Task] = set()
+            try:
+                while True:
+                    msg = await loop.run_in_executor(None, _recv)
+                    if msg is _EOF:
+                        return {
+                            "success": False, "output": "",
+                            "error": "isolation worker died before returning a result",
+                            "user_vars": None,
+                        }
+                    tag, body = msg
+                    if tag == "call":
+                        task = asyncio.ensure_future(_handle(body))
+                        handlers.add(task)
+                        task.add_done_callback(handlers.discard)
+                    elif tag == "done":
+                        return body
+            finally:
+                for task in handlers:
+                    task.cancel()
 
         try:
             result = await asyncio.wait_for(_serve(), timeout=timeout)

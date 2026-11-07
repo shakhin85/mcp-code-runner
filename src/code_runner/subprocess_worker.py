@@ -146,38 +146,56 @@ class _RemoteProxy(_McpProxy):
 
 
 class _RpcBridge:
-    """Serializes proxy calls onto the single pipe.
+    """Multiplexes proxy calls over the single pipe by ``req_id``.
 
-    A lock keeps exactly one request in flight, so the blocking ``recv`` can be
-    offloaded to a thread without two threads reading the pipe at once. Concurrent
-    proxy calls (``asyncio.gather``) therefore serialize rather than overlap —
-    acceptable for a single-client, serialized executor.
+    Every call sends its request at once and awaits its own future; one reader
+    task (the only reader of the pipe, ``recv`` offloaded to a thread) runs while
+    calls are outstanding and dispatches each response by ``req_id``, so
+    ``asyncio.gather`` over proxy calls overlaps end-to-end.
     """
 
     def __init__(self, conn) -> None:
         self._conn = conn
-        self._lock = asyncio.Lock()
         self._counter = 0
+        self._pending: dict[int, asyncio.Future] = {}
+        self._reader: asyncio.Task | None = None
+
+    async def _pump(self) -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            while self._pending:
+                _tag, body = await loop.run_in_executor(None, self._conn.recv)
+                fut = self._pending.pop(body[0])
+                if not fut.done():  # the awaiter may have been cancelled
+                    fut.set_result(body)
+        except BaseException as e:
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(RuntimeError(f"rpc pipe closed: {type(e).__name__}"))
+            self._pending.clear()
+            if not isinstance(e, Exception):
+                raise
+        finally:
+            self._reader = None
 
     async def __call__(
         self, py_server: str, tool_attr: str, kwargs: dict, skill_side: bool,
     ) -> Any:
-        loop = asyncio.get_running_loop()
-        async with self._lock:
-            self._counter += 1
-            req_id = self._counter
-            # The gate runs parent-side (SHA-465). active_skill only shapes the
-            # refusal text; the pass comes from skill_side (SHA-502): user code
-            # here sets active_skill too while a skill runs, but never holds a
-            # skill-side proxy.
-            self._conn.send((
-                "call",
-                (req_id, py_server, tool_attr, kwargs, active_skill.get(), skill_side),
-            ))
-            _tag, body = await loop.run_in_executor(None, self._conn.recv)
-        # tag is always "resp" here; the parent never interleaves other tags
-        # while a call is outstanding.
-        _rid, status, payload = body
+        self._counter += 1
+        req_id = self._counter
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[req_id] = fut
+        if self._reader is None:
+            self._reader = asyncio.ensure_future(self._pump())
+        # The gate runs parent-side (SHA-465). active_skill only shapes the
+        # refusal text; the pass comes from skill_side (SHA-502): user code
+        # here sets active_skill too while a skill runs, but never holds a
+        # skill-side proxy.
+        self._conn.send((
+            "call",
+            (req_id, py_server, tool_attr, kwargs, active_skill.get(), skill_side),
+        ))
+        _rid, status, payload = (await fut)[0:3]
         if status == "ok":
             return payload
         raise _make_remote_exc(payload[0], payload[1])
