@@ -80,7 +80,7 @@ def test_error_text_result_is_named_in_receipt(isolation):
 
 def test_ordinary_text_result_has_no_error_warning():
     pool = _pool("Errors are rare here; 3 rows updated")
-    r = _run("r = await postgres.execute_sql(sql='update t set a=1')\nprint(r)", "inprocess", pool)
+    r = _run("r = await postgres.execute_sql(sql='select a from t')\nprint(r)", "inprocess", pool)
     assert r["success"] is True, r["error"]
     assert "error text" not in r["output"]
 

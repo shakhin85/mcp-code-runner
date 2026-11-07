@@ -132,6 +132,9 @@ matches (`restore.py`, SHA-482) — no downstream call is repeated.
   own entry; a ':' suffix with a dot is part of the name — server names may hold ':'). A gate refusal (deny-by-default, secret) is kept by
   fingerprint (server.tool + canonical args + caller) in the session; the same call under the same permissions is refused at once
   with `повтор отказа:`. Budget and taint refusals are run-level and not remembered.
+  On SQL servers (mssql, postgres*) `execute_sql` is classified by the query text (`sql_limit.non_read_reason`, sqlglot):
+  only all-SELECT batches pass; any other statement, `SELECT … INTO`, a writable CTE, SET/USE/EXEC/EXPLAIN/SHOW or
+  unparsable SQL is side-effecting and the refusal names the reason (SHA-811 follow-up).
 - **Skill-side proxies (SHA-502)** — skills get their own server proxies via the builtin `_cr_servers`
   (`~/.claude/lib/skill_ns.py` resolves only from it, never from user frames). Only these let a `replaces:`
   owner through the side-effect gate without `allow_side_effects`; user code never holds one.
