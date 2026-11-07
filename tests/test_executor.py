@@ -9,6 +9,7 @@ from code_runner.executor import (
     MAX_ERROR_DETAIL,
     CodeExecutor,
     MCPToolError,
+    SideEffectGate,
     _append_cost_footer,
     _limit_error_hint,
     _name_error_hint,
@@ -760,7 +761,11 @@ class TestAutoLimitInjection:
         assert session.last_call[1]["sql"] == "SELECT * FROM t"
 
     def test_insert_untouched(self):
-        ns, session = self._make_ns("postgres_test")
+        session = _FakeSession("[]")
+        ns = _ToolNamespace(
+            "postgres_test", session, [_FakeTool("execute_sql")],
+            side_effects=SideEffectGate(["postgres_test.execute_sql"]),
+        )
         asyncio.run(ns.execute_sql(sql="INSERT INTO t VALUES (1)"))
         assert session.last_call[1]["sql"] == "INSERT INTO t VALUES (1)"
 

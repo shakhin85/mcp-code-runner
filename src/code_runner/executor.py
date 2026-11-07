@@ -58,7 +58,7 @@ from .metrics import (
 from .observed_shape import record as record_shape
 from .restore import make_restore, saved_output_name
 from .skills import SKILL_SERVERS, SkillsNamespace, active_skill, mark_fatal, note_tool_call
-from .sql_limit import inject_limit
+from .sql_limit import inject_limit, non_read_reason
 from .workspace import WorkspaceError, WorkspaceManager, safe_open, validate_session_id
 
 SAFE_BUILTINS = {
@@ -634,6 +634,30 @@ _SQL_DIALECT_BY_SERVER: dict[str, str] = {"mssql": "mssql"}
 _SQL_PREFIXES: tuple[str, ...] = ("postgres",)
 _SQL_TOOL_NAMES: frozenset[str] = frozenset({"execute_sql"})
 _SQL_ARG_NAMES: tuple[str, ...] = ("sql", "query")
+
+
+def _sql_arg(kwargs: dict) -> str | None:
+    """Name of the first non-empty string SQL argument, None when absent."""
+    for arg in _SQL_ARG_NAMES:
+        value = kwargs.get(arg)
+        if isinstance(value, str) and value:
+            return arg
+    return None
+
+
+def _sql_gate_reason(kwargs: dict, dialect: str) -> str | None:
+    """Refusal reason over EVERY present SQL argument; a non-str one is refused."""
+    for arg in _SQL_ARG_NAMES:
+        if arg not in kwargs:
+            continue
+        value = kwargs[arg]
+        if type(value) is not str:
+            return "SQL не разобран"
+        if value:
+            reason = non_read_reason(value, dialect)
+            if reason is not None:
+                return reason
+    return None
 
 
 def _dialect_for_server(server_name: str) -> str | None:
@@ -1602,7 +1626,8 @@ class _ToolNamespace(_McpProxy):
         self._session = session
         self._tools = {t.name: t for t in tools}
         self._auto_limit = auto_limit
-        self._sql_dialect = _dialect_for_server(server_name) if auto_limit > 0 else None
+        self._sql_server_dialect = _dialect_for_server(server_name)
+        self._sql_dialect = self._sql_server_dialect if auto_limit > 0 else None
         self._stats = stats
         self._recorder = recorder
         self._raw_cap = raw_cap
@@ -1629,16 +1654,14 @@ class _ToolNamespace(_McpProxy):
         """Mutate kwargs to add default LIMIT/TOP. Returns True if changed."""
         if self._sql_dialect is None or tool_name not in _SQL_TOOL_NAMES:
             return False
-        for arg in _SQL_ARG_NAMES:
-            original = kwargs.get(arg)
-            if isinstance(original, str) and original:
-                rewritten = inject_limit(
-                    original, self._auto_limit, self._sql_dialect
-                )
-                if rewritten != original:
-                    kwargs[arg] = rewritten
-                    return True
-                return False
+        arg = _sql_arg(kwargs)
+        if arg is None:
+            return False
+        original = kwargs[arg]
+        rewritten = inject_limit(original, self._auto_limit, self._sql_dialect)
+        if rewritten != original:
+            kwargs[arg] = rewritten
+            return True
         return False
 
     def _make_wrapper(self, tool_name: str):
@@ -1661,6 +1684,16 @@ class _ToolNamespace(_McpProxy):
             # of having been attempted.
             gated = _gated_name(tool_name, kwargs)
             side_effecting = _is_side_effecting(gated)
+            # SQL servers: execute_sql is classified by the statement text, not
+            # the name — anything but plain SELECT needs allow_side_effects.
+            sql_reason = None
+            if (
+                not side_effecting
+                and self._sql_server_dialect is not None
+                and tool_name in _SQL_TOOL_NAMES
+            ):
+                sql_reason = _sql_gate_reason(kwargs, self._sql_server_dialect)
+                side_effecting = sql_reason is not None
             if side_effecting:
                 entries = gate.entries(server, gated)
                 # SHA-524: a refusal already given under these permissions is
@@ -1690,7 +1723,8 @@ class _ToolNamespace(_McpProxy):
                                 else ""
                             )
                             raise PermissionError(
-                                f"{hint}{server}.{gated} is side-effecting; pass "
+                                f"{hint}{server}.{gated} is side-effecting"
+                                f"{f' ({sql_reason})' if sql_reason else ''}; pass "
                                 f'allow_side_effects=["{server}.{gated}"] to execute_code'
                             )
                     # SHA-503: every side-effecting call is scanned, the owner's
