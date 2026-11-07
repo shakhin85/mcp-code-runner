@@ -112,7 +112,7 @@ matches (`restore.py`, SHA-482) — no downstream call is repeated.
   containment: user code runs in a per-call child with `RLIMIT_AS`/`RLIMIT_CPU`/`RLIMIT_FSIZE`
   and a scrubbed environment; MCP calls are proxied back to the parent (live sessions never
   reach the child) and multiplexed by `req_id` — the parent runs one task per call, so
-  `asyncio.gather` over proxy calls overlaps end-to-end. An escape, OOM, or CPU loop is confined to a killable process, not the
+  `asyncio.gather` over proxy calls overlaps end-to-end. At most `RPC_MAX_INFLIGHT` (16) parent-side handlers run at once per run (the rest wait on a semaphore, still cancellable), and replies are sent from one dedicated sender thread, so a stuck or large send never blocks the daemon loop and frames never interleave. An escape, OOM, or CPU loop is confined to a killable process, not the
   server. Persisted session vars must be picklable to cross the process boundary.
   Downstream credentials (pool configs, session headers) never reach the child, so
   subprocess keeps them out of user code by construction. In-process relies on the

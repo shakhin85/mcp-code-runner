@@ -39,6 +39,7 @@ import traceback
 import types
 import uuid
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -629,6 +630,7 @@ if _MP_START_METHOD == "forkserver":
             ["code_runner.subprocess_worker"]
         )
 _LOG = logging.getLogger(__name__)
+RPC_MAX_INFLIGHT = 16  # concurrently running parent-side handlers per subprocess run
 _EOF = object()  # sentinel: the worker pipe closed (child killed or crashed)
 
 # Server-name prefix → sqlglot dialect for auto-LIMIT injection.
@@ -2214,6 +2216,17 @@ class CodeExecutor:
 
         threading.Thread(target=_read_loop, daemon=True, name="rpc-parent-reader").start()
 
+        # One sender thread: frames go out in order and never interleave, even
+        # when a cancelled awaiter leaves its send running. A blocking send
+        # (child stuck in C, reply bigger than the socket buffer) stalls only
+        # that thread, not the daemon loop.
+        sender = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rpc-parent-sender")
+
+        async def _send(msg: tuple) -> None:
+            await loop.run_in_executor(sender, parent_conn.send, msg)
+
+        inflight = asyncio.Semaphore(RPC_MAX_INFLIGHT)
+
         async def _handle(body: tuple) -> None:
             req_id, py_server, tool_attr, kwargs, skill_name, skill_side = body
             token = active_skill.set(skill_name)
@@ -2222,7 +2235,8 @@ class CodeExecutor:
             side = skill_proxies if skill_side else proxies
             try:
                 wrapper = getattr(side[py_server], tool_attr)
-                reply = ("resp", (req_id, "ok", await wrapper(**kwargs)))
+                async with inflight:
+                    reply = ("resp", (req_id, "ok", await wrapper(**kwargs)))
             # Exception, не BaseException: CancelledError от общего
             # wait_for обязан пройти наверх, иначе отмена глоталась,
             # ошибка уходила в child, и таймаут execute_code не срабатывал.
@@ -2231,13 +2245,13 @@ class CodeExecutor:
             finally:
                 active_skill.reset(token)
             try:
-                parent_conn.send(reply)
+                await _send(reply)
             except OSError:
                 pass  # child is gone; _serve sees EOF
             except Exception as e:  # the value did not pickle: fail this call only
                 _LOG.warning("rpc reply for %s.%s not sent: %r", py_server, tool_attr, e)
                 with contextlib.suppress(OSError):
-                    parent_conn.send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
+                    await _send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
 
         names: dict[asyncio.Task, str] = {}
         saved: list[dict[str, Any]] = []
@@ -2302,6 +2316,7 @@ class CodeExecutor:
         finally:
             if proc.is_alive():
                 proc.kill()
+            sender.shutdown(wait=False)
             await loop.run_in_executor(None, proc.join)
 
         if session_id is not None and result.get("success"):
