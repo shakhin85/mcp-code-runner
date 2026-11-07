@@ -14,6 +14,7 @@ import json
 import keyword
 import os
 import re
+import statistics
 import sys
 import threading
 from datetime import UTC, datetime, timedelta
@@ -260,6 +261,50 @@ def summarize_errors(events: list[dict[str, Any]]) -> dict[str, Any]:
 SKILL_TRIM_WINDOW_DAYS = 30
 SKILL_TRIM_MIN_CALLS = 5
 SKILL_TRIM_ERROR_SHARE = 0.3
+
+# Per-server verdict (research 2026-11-07 #2). The sandbox pays off only when raw
+# responses are large enough to be aggregated away before they reach the context;
+# below this median a direct MCP call costs the same and skips the extra layer.
+SANDBOX_MEDIAN_BYTES = 5000
+# SQL servers are already "code mode": aggregation belongs in the query, not in
+# Python (Databricks: Python-side aggregation cost up to +376%). Recognised by tool name.
+SQL_TOOLS = frozenset({"execute_sql", "execute_query", "run_query", "query"})
+SERVERS_WINDOW_DAYS = 7
+
+
+def _percentile(sorted_vals: list[int], q: float) -> int:
+    return sorted_vals[min(len(sorted_vals) - 1, int(q * len(sorted_vals)))]
+
+
+def summarize_servers(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per server from tool_call events: calls, median/p90 bytes, verdict.
+
+    Verdict: median_bytes >= SANDBOX_MEDIAN_BYTES -> "sandbox"; otherwise "direct",
+    or "direct-sql" for a server that has any SQL tool call (SQL_TOOLS).
+    """
+    sizes: dict[str, list[int]] = {}
+    sql: set[str] = set()
+    for ev in events:
+        if ev.get("kind") != "tool_call":
+            continue
+        server = ev.get("server")
+        sizes.setdefault(server, []).append(int(ev.get("bytes") or 0))
+        if ev.get("tool") in SQL_TOOLS:
+            sql.add(server)
+    rows = []
+    for server, vals in sizes.items():
+        vals.sort()
+        median = int(statistics.median(vals))
+        if median >= SANDBOX_MEDIAN_BYTES:
+            verdict = "sandbox"
+        else:
+            verdict = "direct-sql" if server in sql else "direct"
+        rows.append({
+            "server": server, "calls": len(vals), "median_bytes": median,
+            "p90_bytes": _percentile(vals, 0.9), "verdict": verdict,
+        })
+    rows.sort(key=lambda r: (-r["calls"], r["server"]))
+    return rows
 
 
 def summarize_fallbacks(events: list[dict[str, Any]]) -> dict[str, Any]:

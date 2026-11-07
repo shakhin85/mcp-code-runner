@@ -30,9 +30,11 @@ from .config_reader import load_server_configs, server_name_to_py
 from .executor import CodeExecutor
 from .late_response import drop_cancelled_responses
 from .metrics import (
+    SERVERS_WINDOW_DAYS,
     SKILL_TRIM_WINDOW_DAYS,
     recorder_from_env,
     summarize_errors,
+    summarize_servers,
     summarize_skills,
 )
 from .project_pools import STARTUP_TIMEOUT, ProjectPoolRegistry, _PoolHost
@@ -582,6 +584,7 @@ async def get_metrics(
     limit: int = 100,
     summary: bool = False,
     skills: bool = False,
+    servers: bool = False,
 ) -> str:
     """
     Return recent code-runner metrics events as a JSON list (most recent last).
@@ -618,6 +621,10 @@ async def get_metrics(
             ("unused" / "failing" / null) — over the last 30 days (or `since`),
             plus the thresholds used. Ignores server/kind/limit. Candidates are
             for review; deleting a skill is a human decision.
+        servers: Return one row per server over the last 7 days (or `since`):
+            calls, median_bytes, p90_bytes and verdict "sandbox" (median >= 5000B),
+            "direct" or "direct-sql" (SQL server below the threshold). Ignores
+            server/kind/limit.
 
     Returns JSON string. Empty list if no events match or metrics are disabled.
     """
@@ -637,6 +644,14 @@ async def get_metrics(
         return json.dumps(
             summarize_skills(events, installed), ensure_ascii=False, default=str, indent=2
         )
+    if servers:
+        window_start = datetime.now(UTC) - timedelta(days=SERVERS_WINDOW_DAYS)
+        events = executor.recorder.read(
+            since=since or window_start.strftime("%Y-%m-%dT%H:%M:%S"),
+            kind="tool_call",
+            limit=0,
+        )
+        return json.dumps(summarize_servers(events), ensure_ascii=False, indent=2)
     events = executor.recorder.read(
         since=since, server=server, kind=kind, limit=limit
     )

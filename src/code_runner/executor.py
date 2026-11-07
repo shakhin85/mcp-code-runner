@@ -47,6 +47,7 @@ from . import prelude as _prelude
 from . import repeat_pattern, secret_gate
 from .config_reader import server_name_to_py
 from .metrics import (
+    SQL_TOOLS,
     MetricsRecorder,
     PastFixIndex,
     classify_error,
@@ -742,6 +743,14 @@ def _fmt_bytes(n: int) -> str:
     return f"{n / (1024 * 1024):.1f}MB"
 
 
+# Receipt HINTs fire only on raw >= 5KB: below that nothing worth saving is at stake.
+HINT_MIN_RAW_BYTES = 5000
+# Printed >= 50% of raw: the sandbox did not shrink the context.
+LOW_COMPRESSION_SHARE = 0.5
+# SQL answer at least 2x the printed output: rows were pulled out to be aggregated in Python.
+SQL_AGG_RATIO = 2
+
+
 def _append_cost_footer(output: str, stats: dict[str, Any], elapsed_ms: float) -> str:
     """Append a one-line cost receipt when the run actually called MCP tools.
 
@@ -770,6 +779,21 @@ def _append_cost_footer(output: str, stats: dict[str, Any], elapsed_ms: float) -
         line += (
             "\n[cr] no aggregation happened here — one tool call, output passed through. "
             "A direct MCP call would have cost the same and been simpler."
+        )
+    elif raw >= HINT_MIN_RAW_BYTES and sent >= raw * LOW_COMPRESSION_SHARE:
+        line += (
+            f"\nHINT: напечатано {100 * sent / raw:.0f}% сырья — агрегируй/фильтруй до print, "
+            "иначе песочница не экономит"
+        )
+    sql_bytes = stats.get("sql_bytes", 0)
+    if (
+        1 <= stats.get("sql_calls", 0) <= 2
+        and sql_bytes >= HINT_MIN_RAW_BYTES
+        and sql_bytes >= sent * SQL_AGG_RATIO
+    ):
+        line += (
+            "\nHINT: агрегацию (GROUP BY / оконные / UNION ALL) делай в SQL "
+            "и зови сервер напрямую"
         )
     warnings = _quiet_failure_warnings(stats)
     if warnings:
@@ -1769,6 +1793,9 @@ class _ToolNamespace(_McpProxy):
                     self._stats["raw_tool_bytes"] = (
                         self._stats.get("raw_tool_bytes", 0) + out_bytes
                     )
+                    if tool_name in SQL_TOOLS:
+                        self._stats["sql_calls"] = self._stats.get("sql_calls", 0) + 1
+                        self._stats["sql_bytes"] = self._stats.get("sql_bytes", 0) + out_bytes
                 if self._recorder is not None:
                     with contextlib.suppress(Exception):
                         self._recorder.record({

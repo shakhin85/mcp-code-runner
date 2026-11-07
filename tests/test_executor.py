@@ -1165,6 +1165,47 @@ def test_cost_footer_silent_when_aggregation_happened():
     assert "no aggregation happened here" not in out
 
 
+def test_low_compression_hint_fires():
+    stats = {"tool_calls": 3, "raw_tool_bytes": 20_000}
+    out = _append_cost_footer("x" * 12_000, stats, elapsed_ms=10)
+    assert "HINT: напечатано 60% сырья" in out
+
+
+def test_low_compression_hint_silent_when_aggregated_or_small():
+    big = {"tool_calls": 3, "raw_tool_bytes": 20_000}
+    assert "напечатано" not in _append_cost_footer("x" * 5_000, big, elapsed_ms=10)
+    small = {"tool_calls": 3, "raw_tool_bytes": 4_000}
+    assert "напечатано" not in _append_cost_footer("x" * 4_000, small, elapsed_ms=10)
+
+
+def test_low_compression_hint_not_duplicated_on_passthrough():
+    stats = {"tool_calls": 1, "raw_tool_bytes": 10_000}
+    out = _append_cost_footer("x" * 10_000, stats, elapsed_ms=10)
+    assert "no aggregation happened here" in out
+    assert "напечатано" not in out
+
+
+def test_sql_aggregation_hint_fires():
+    stats = {"tool_calls": 1, "raw_tool_bytes": 50_000, "sql_calls": 1, "sql_bytes": 50_000}
+    out = _append_cost_footer("42 rows", stats, elapsed_ms=10)
+    assert "HINT: агрегацию (GROUP BY / оконные / UNION ALL)" in out
+
+
+def test_sql_aggregation_hint_silent_outside_its_case():
+    base = {"tool_calls": 1, "raw_tool_bytes": 50_000, "sql_calls": 1, "sql_bytes": 50_000}
+    # SQL answer passed through: not an aggregation
+    assert "агрегацию" not in _append_cost_footer("x" * 40_000, base, elapsed_ms=10)
+    # no SQL call
+    plain = {"tool_calls": 1, "raw_tool_bytes": 50_000}
+    assert "агрегацию" not in _append_cost_footer("42 rows", plain, elapsed_ms=10)
+    # 3 SQL calls: fan-out, the sandbox earns its place
+    many = {**base, "tool_calls": 3, "sql_calls": 3}
+    assert "агрегацию" not in _append_cost_footer("42 rows", many, elapsed_ms=10)
+    # tiny SQL answer
+    tiny = {"tool_calls": 1, "raw_tool_bytes": 800, "sql_calls": 1, "sql_bytes": 800}
+    assert "агрегацию" not in _append_cost_footer("1", tiny, elapsed_ms=10)
+
+
 # --- signature hint on argument-shape TypeErrors ---------------------------
 
 def _skills_with_query(tmp_path):
