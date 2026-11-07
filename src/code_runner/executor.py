@@ -50,6 +50,7 @@ from .metrics import (
     SQL_TOOLS,
     MetricsRecorder,
     PastFixIndex,
+    caller_of,
     classify_error,
     code_fingerprint,
     fix_fragment,
@@ -935,17 +936,35 @@ def _parse_python_repr(text: str) -> Any:
 _PRELOADED_MODULES = frozenset({"asyncio", "skills", *SAFE_MODULES})
 
 
+def _is_preloaded(name: str | None) -> bool:
+    """A preloaded module, or a dotted `skills.<name>` path (no `_` parts)."""
+    if name in _PRELOADED_MODULES:
+        return True
+    parts = (name or "").split(".")
+    bad = any(p.startswith("_") or not p for p in parts)
+    return parts[0] == "skills" and len(parts) > 1 and not bad
+
+
+def _dotted(name: str) -> ast.expr:
+    parts = name.split(".")
+    expr: ast.expr = ast.Name(id=parts[0], ctx=ast.Load())
+    for part in parts[1:]:
+        expr = ast.Attribute(value=expr, attr=part, ctx=ast.Load())
+    return expr
+
+
 def _is_noop_import(node: ast.AST) -> bool:
     """`import X` / `import X as Y` / `from X import a, b` of a module that is
     already in the namespace. Such an import binds names that exist anyway, so
     it is rewritten to an assignment (_rewrite_noop_imports) instead of refused.
-    Dotted names, relative imports, `*` and `_`-names stay blocked."""
+    Dotted names (except `skills.<name>`), relative imports, `*` and `_`-names
+    stay blocked."""
     if isinstance(node, ast.Import):
-        return all(a.name in _PRELOADED_MODULES for a in node.names)
+        return all(_is_preloaded(a.name) for a in node.names)
     if isinstance(node, ast.ImportFrom):
         return (
             node.level == 0
-            and node.module in _PRELOADED_MODULES
+            and _is_preloaded(node.module)
             and all(a.name != "*" and not a.name.startswith("_") for a in node.names)
         )
     return False
@@ -965,7 +984,13 @@ class _NoopImportRewriter(ast.NodeTransformer):
         if not _is_noop_import(node):
             return node
         return self._assigns(
-            [(a.asname or a.name, ast.Name(id=a.name, ctx=ast.Load())) for a in node.names],
+            [
+                (
+                    a.asname or a.name.split(".")[0],
+                    _dotted(a.name if a.asname else a.name.split(".")[0]),
+                )
+                for a in node.names
+            ],
             node,
         )
 
@@ -976,11 +1001,7 @@ class _NoopImportRewriter(ast.NodeTransformer):
             [
                 (
                     a.asname or a.name,
-                    ast.Attribute(
-                        value=ast.Name(id=node.module, ctx=ast.Load()),
-                        attr=a.name,
-                        ctx=ast.Load(),
-                    ),
+                    ast.Attribute(value=_dotted(node.module), attr=a.name, ctx=ast.Load()),
                 )
                 for a in node.names
             ],
@@ -1074,6 +1095,8 @@ def validate_code(code: str) -> None:
                     f"{', '.join(sorted(preloaded))}. Файлы — через open() "
                     "(session-workspace), MCP-серверы — через их прокси-объекты"
                 )
+                if {"os", "pathlib", "glob", "shutil", "subprocess"} & set(names):
+                    hint += "; процессы и ФС вне песочницы — Bash вне execute_code"
             raise ValueError(
                 f"import statements are not allowed: {', '.join(names)}{hint}"
             )
@@ -2323,6 +2346,7 @@ class CodeExecutor:
                         "tool_calls": stats["tool_calls"],
                         "auto_limit_hits": stats["auto_limit_hits"],
                         "session_id": session_id,
+                        "caller": caller_of(session_id),
                         "code_sha": code_sha,
                         "code_lines": code_lines,
                         "error": error,

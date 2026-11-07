@@ -208,6 +208,13 @@ class PastFixIndex:
         return "\n\n" + (head + frag)[:PAST_FIX_MAX_CHARS]
 
 
+def caller_of(session_id: str | None) -> str:
+    """Calling agent by the session_id convention `<agent>-<topic>` (`main-…`)."""
+    if not session_id:
+        return "unknown"
+    return session_id.split("-", 1)[0] or "unknown"
+
+
 def summarize_errors(events: list[dict[str, Any]]) -> dict[str, Any]:
     """Aggregate execute_code events into a failure breakdown.
 
@@ -236,17 +243,25 @@ def summarize_errors(events: list[dict[str, Any]]) -> dict[str, Any]:
         seen.add(mark)
     total = len(runs)
     ordered = dict(sorted(by_class.items(), key=lambda kv: (-kv[1], kv[0])))
+    by_caller: dict[str, dict[str, Any]] = {}
+    for ev in runs:
+        row = by_caller.setdefault(
+            ev.get("caller") or caller_of(ev.get("session_id")), {"runs": 0, "failed": 0}
+        )
+        row["runs"] += 1
+        row["failed"] += ev.get("success") is False
+    for row in by_caller.values():
+        row["fail_rate"] = round(row["failed"] / row["runs"], 4)
     return {
         "runs": total,
         "failed": len(failures),
         "fail_rate": round(len(failures) / total, 4) if total else 0.0,
         "by_error_class": ordered,
+        "by_caller": by_caller,
         "repeat_errors": repeats,
         "repeat_error_share": round(repeats / len(failures), 4) if failures else 0.0,
         "syntax_errors": by_class.get("SyntaxError", 0),
-        "syntax_share": (
-            round(by_class.get("SyntaxError", 0) / total, 4) if total else 0.0
-        ),
+        "syntax_share": (round(by_class.get("SyntaxError", 0) / total, 4) if total else 0.0),
         "window": {
             "first_ts": runs[0].get("ts") if runs else None,
             "last_ts": runs[-1].get("ts") if runs else None,

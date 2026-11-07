@@ -95,9 +95,9 @@ def test_from_skills_import_binds_the_skill(tmp_path, isolation):
     assert "2" in r["output"]
 
 
-def test_dotted_skills_import_stays_blocked(tmp_path):
-    r = _run("from skills.calc import ok", "inprocess", skills=_skills(tmp_path))
-    assert r["success"] is False
+def test_dotted_skills_import_binds_the_skill(tmp_path):
+    r = _run("from skills.calc import ok\nprint(ok(1)['v'])", "inprocess", skills=_skills(tmp_path))
+    assert r["success"] is True, r["error"]
 
 
 # --- hole 6: await on a sync skill, hasattr ----------------------------------
