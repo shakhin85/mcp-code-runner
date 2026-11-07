@@ -194,8 +194,12 @@ def test_match_is_fast_on_large_untrusted_text():
     text = "".join(chr(0x4E00 + (i * 7919) % 20000) for i in range(2_000_000))
     gate.record("wigolo", text)
     arg = "".join(chr(0x0100 + (i * 104729) % 1000) for i in range(10_000))
-    start = time.monotonic()
+    # CPU time, not wall clock: tests.slice (CPUQuota 200%) is shared by
+    # parallel testrun sessions, and contention doubled the wall time here
+    # (0.40s -> 0.80s, CPU 0.41s both times). A quadratic match blows the
+    # CPU budget by orders of magnitude, so the check still catches it.
+    start = time.process_time()
     gate.check("forgetful", "create_memory", {"content": arg})
-    assert time.monotonic() - start < 1.0
+    assert time.process_time() - start < 1.0
     with pytest.raises(PermissionError):
         gate.check("forgetful", "create_memory", {"content": "x" + text[500_000:500_030]})
