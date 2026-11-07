@@ -2229,8 +2229,13 @@ class CodeExecutor:
         allow_side_effects: list[str] | None = None,
         allow_tainted: list[str] | None = None,
         skills: Any = None,
+        persist_vars: bool = True,
     ) -> dict[str, Any]:
-        """`skills` replaces self.skills for this run only (save_skill trial)."""
+        """`skills` replaces self.skills for this run only (save_skill trial).
+
+        `persist_vars=False` keeps the session (workspace, restore, hints) but
+        drops the block's variables, so a derived id never leaks them.
+        """
         # Signals are process-global, so only one execution may arm SIGALRM
         # at a time. The lock is also cheap for the common single-client
         # MCP stdio case.
@@ -2246,6 +2251,8 @@ class CodeExecutor:
                 )
             finally:
                 self._extra_pool = None
+                if not persist_vars and session_id in self._sessions:
+                    self._sessions[session_id].user_vars = {}
                 # A save_skill reload during the trial wins over the old set.
                 if skills is not None and self.skills is skills:
                     self.skills = own_skills

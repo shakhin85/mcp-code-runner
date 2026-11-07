@@ -15,6 +15,7 @@ import math
 import os
 import re
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -46,6 +47,7 @@ from .skills import (
     stage_skills,
     write_skill_files,
 )
+from .workspace import WorkspaceError
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -142,6 +144,24 @@ drop_cancelled_responses(mcp._mcp_server)
 # client session -> resolved project dir (or None if roots недоступны).
 # Roots запрашиваются у клиента один раз на MCP-сессию.
 _session_roots: "WeakKeyDictionary[Any, Path | None]" = WeakKeyDictionary()
+
+
+AUTO_SESSION_PREFIX = "auto-"
+
+# client session -> auto-generated session_id for calls that pass none.
+_auto_session_ids: "WeakKeyDictionary[Any, str]" = WeakKeyDictionary()
+
+
+def _effective_session_id(ctx: Context, session_id: str | None) -> str:
+    """Passed id, else a stable `auto-<hash>` per MCP session (caller_of -> "auto")."""
+    if session_id:
+        if session_id.startswith(AUTO_SESSION_PREFIX):
+            raise WorkspaceError(f"префикс {AUTO_SESSION_PREFIX} зарезервирован за сервером")
+        return session_id
+    session = ctx.session
+    if session not in _auto_session_ids:
+        _auto_session_ids[session] = f"{AUTO_SESSION_PREFIX}{uuid.uuid4().hex}"[:64]
+    return _auto_session_ids[session]
 
 
 async def _resolve_project_dir(ctx: Context) -> "Path | None":
@@ -511,7 +531,8 @@ async def execute_code(
             user-defined variables (assignments) persist between them, so a
             follow-up call can reuse fetched data without re-running the
             MCP query. Idle sessions expire after ~10 minutes; ≤20 sessions
-            are kept at once (LRU eviction). Omit for one-shot execution.
+            are kept at once (LRU eviction). Omitted: the server uses a stable
+            `auto-<hash>` id per MCP session, variables then do NOT persist between calls.
         auto_limit: Default row cap applied to bare SELECT queries sent to
             postgres_*/mssql execute_sql tools (default 500). The proxy
             rewrites `SELECT ... FROM t` into `SELECT ... FROM t LIMIT 500`
@@ -557,7 +578,8 @@ async def execute_code(
         code,
         timeout=timeout,
         max_output_bytes=max_output_bytes,
-        session_id=session_id,
+        session_id=_effective_session_id(ctx, session_id),
+        persist_vars=bool(session_id),
         auto_limit=auto_limit,
         raw_cap=raw_cap,
         extra_pool=await _project_pool(ctx, code),
