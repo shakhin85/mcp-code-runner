@@ -155,3 +155,67 @@ def test_cancelled_awaiter_does_not_poison_next_call():
     assert "timed" in result["output"] and "ok-2" in result["output"]
     assert "ok-1" not in result["output"]
     assert wall < 6, wall
+
+
+def _orphan_run(tail, timeout=3):
+    code = "g = asyncio.gather(srv.srv_get(delay=30))\nawait asyncio.sleep(0)\n" + tail
+    t0 = time.monotonic()
+    result = asyncio.run(_executor().execute(code, timeout=timeout))
+    return result, time.monotonic() - t0
+
+
+def test_orphan_call_past_timeout_keeps_successful_result():
+    result, wall = _orphan_run("print('left')\n")
+    assert result["success"] is True, result
+    assert "left" in result["output"]
+    assert "⚠ 1 незавершённых вызовов отменены по таймауту: srv.srv_get" in result["output"]
+    assert wall < 4, wall
+
+
+def test_orphan_call_past_timeout_keeps_child_error():
+    result, wall = _orphan_run("raise ValueError('mine')\n")
+    assert result["success"] is False
+    assert "ValueError" in result["error"] and "timed out" not in result["error"], result
+    assert wall < 4, wall
+
+
+def test_child_reader_failure_fails_awaiter_by_name():
+    class Boom:
+        def __reduce__(self):
+            return (eval, ("1/0",))  # unpickling in the child raises
+
+    orig = CodeExecutor._build_proxies
+
+    def build(self, *a, **kw):
+        proxies, skill_proxies = orig(self, *a, **kw)
+        for side in (proxies, skill_proxies):
+            async def get(**kwargs):
+                return Boom()
+
+            side["srv"].srv_get = get
+        return proxies, skill_proxies
+
+    CodeExecutor._build_proxies, saved = build, orig
+    try:
+        code = (
+            "try:\n    await srv.srv_get()\nexcept RuntimeError as e:\n    print('E', e)\n"
+        )
+        result, wall = _run(code)
+    finally:
+        CodeExecutor._build_proxies = saved
+    assert result["success"] is True, result
+    assert "rpc reader failed: ZeroDivisionError" in result["output"], result["output"]
+    assert wall < 8, wall
+
+
+def test_parent_reader_failure_ends_run_with_named_error(monkeypatch):
+    from multiprocessing import connection
+
+    def recv(self):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(connection.Connection, "recv", recv)
+    result, wall = _run("print(await srv.srv_get())\n")
+    assert result["success"] is False
+    assert "isolation pipe reader failed: ValueError: boom" in result["error"], result
+    assert wall < 8, wall

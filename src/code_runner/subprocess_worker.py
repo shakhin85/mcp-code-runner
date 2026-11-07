@@ -162,25 +162,29 @@ class _RpcBridge:
         self._counter = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._reader: threading.Thread | None = None
+        self._failed: str | None = None
 
     def _read_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         while True:
             try:
                 _tag, body = self._conn.recv()
             except (EOFError, OSError):
-                body = None
+                body = "rpc pipe closed"
+            except Exception as e:  # unpickle/memory failure: the stream is unusable
+                body = f"rpc reader failed: {type(e).__name__}: {e}"
             try:
                 loop.call_soon_threadsafe(self._deliver, body)
             except RuntimeError:  # loop closed: the run is over
                 return
-            if body is None:
+            if isinstance(body, str):
                 return
 
-    def _deliver(self, body: tuple | None) -> None:
-        if body is None:  # pipe closed: nobody will answer
+    def _deliver(self, body: tuple | str) -> None:
+        if isinstance(body, str):  # reader is gone: nobody will answer
+            self._failed = body
             for fut in self._pending.values():
                 if not fut.done():
-                    fut.set_exception(RuntimeError("rpc pipe closed"))
+                    fut.set_exception(RuntimeError(body))
             self._pending.clear()
             return
         fut = self._pending.pop(body[0], None)  # None: awaiter was cancelled
@@ -191,6 +195,8 @@ class _RpcBridge:
         self, py_server: str, tool_attr: str, kwargs: dict, skill_side: bool,
     ) -> Any:
         loop = asyncio.get_running_loop()
+        if self._failed is not None:
+            raise RuntimeError(self._failed)
         if self._reader is None:
             self._reader = threading.Thread(
                 target=self._read_loop, args=(loop,), daemon=True, name="rpc-reader",

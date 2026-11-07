@@ -2192,17 +2192,25 @@ class CodeExecutor:
         def _read_loop() -> None:
             # Dedicated reader: keeps draining the pipe whatever the loop is
             # doing, so a child send never blocks on a loop busy in its own send.
-            while True:
-                try:
-                    msg = parent_conn.recv()
-                except (EOFError, OSError):
-                    msg = _EOF
-                try:
-                    loop.call_soon_threadsafe(inbox.put_nowait, msg)
-                except RuntimeError:
-                    return
-                if msg is _EOF:
-                    return
+            # It owns the fd: closing it from another thread mid-recv could hand
+            # the number to the next Pipe.
+            try:
+                while True:
+                    try:
+                        msg = parent_conn.recv()
+                    except (EOFError, OSError):
+                        msg = _EOF
+                    except Exception as e:  # unpickle/memory failure
+                        msg = ("readerr", f"{type(e).__name__}: {e}")
+                    try:
+                        loop.call_soon_threadsafe(inbox.put_nowait, msg)
+                    except RuntimeError:
+                        return
+                    if msg is _EOF or msg[0] == "readerr":
+                        return
+            finally:
+                with contextlib.suppress(OSError):
+                    parent_conn.close()
 
         threading.Thread(target=_read_loop, daemon=True, name="rpc-parent-reader").start()
 
@@ -2231,6 +2239,10 @@ class CodeExecutor:
                 with contextlib.suppress(OSError):
                     parent_conn.send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
 
+        names: dict[asyncio.Task, str] = {}
+        saved: list[dict[str, Any]] = []
+        orphans: list[str] = []
+
         async def _serve() -> dict[str, Any]:
             handlers: set[asyncio.Task] = set()
             try:
@@ -2243,14 +2255,28 @@ class CodeExecutor:
                             "user_vars": None,
                         }
                     tag, body = msg
+                    if tag == "readerr":
+                        return {
+                            "success": False, "output": "",
+                            "error": f"isolation pipe reader failed: {body}",
+                            "user_vars": None,
+                        }
                     if tag == "call":
                         task = asyncio.ensure_future(_handle(body))
+                        names[task] = f"{body[1]}.{body[2]}"
                         handlers.add(task)
                         task.add_done_callback(handlers.discard)
                     elif tag == "done":
-                        # Calls the child left in flight finish (bounded by the run
-                        # timeout) so stats and the cost receipt are complete.
-                        await asyncio.gather(*handlers, return_exceptions=True)
+                        # Keep the child's result; calls it left in flight may finish
+                        # (bounded by the remaining run timeout) so stats and the
+                        # cost receipt are complete. On timeout the saved result wins.
+                        saved.append(body)
+                        try:  # wait(), not gather(): cancelling it must not cancel the calls
+                            if handlers:
+                                await asyncio.wait(set(handlers))
+                        except asyncio.CancelledError:  # run timeout: name the stragglers
+                            orphans.extend(names[t] for t in handlers if not t.done())
+                            raise
                         return body
             finally:
                 pending = list(handlers)
@@ -2261,16 +2287,22 @@ class CodeExecutor:
         try:
             result = await asyncio.wait_for(_serve(), timeout=timeout)
         except TimeoutError:
-            result = {
-                "success": False, "output": "",
-                "error": f"Execution timed out after {timeout}s (isolation subprocess killed)",
-                "user_vars": None,
-            }
+            if saved:
+                result = dict(saved[0])
+                result["output"] = (result.get("output") or "") + (
+                    f"\n[cr] ⚠ {len(orphans)} незавершённых вызовов отменены по таймауту: "
+                    + ", ".join(orphans)
+                )
+            else:
+                result = {
+                    "success": False, "output": "",
+                    "error": f"Execution timed out after {timeout}s (isolation subprocess killed)",
+                    "user_vars": None,
+                }
         finally:
             if proc.is_alive():
                 proc.kill()
             await loop.run_in_executor(None, proc.join)
-            parent_conn.close()
 
         if session_id is not None and result.get("success"):
             st = self._sessions.get(session_id)
