@@ -938,12 +938,23 @@ _PRELOADED_MODULES = frozenset({"asyncio", "skills", *SAFE_MODULES})
 
 
 def _is_preloaded(name: str | None) -> bool:
-    """A preloaded module, or a dotted `skills.<name>` path (no `_` parts)."""
+    """A preloaded module, or exactly `skills.<name>` with a name _check_attr_name accepts."""
     if name in _PRELOADED_MODULES:
         return True
     parts = (name or "").split(".")
-    bad = any(p.startswith("_") or not p for p in parts)
-    return parts[0] == "skills" and len(parts) > 1 and not bad
+    return len(parts) == 2 and parts[0] == "skills" and _attr_name_ok(parts[1])
+
+
+def _attr_name_ok(name: str) -> bool:
+    """The rewrite runs after validate_code and turns names into attribute access,
+    so every such name must pass the same rule as a written `x.name`."""
+    if not name.isidentifier():
+        return False
+    try:
+        _check_attr_name(name)
+    except ValueError:
+        return False
+    return True
 
 
 def _dotted(name: str) -> ast.expr:
@@ -966,7 +977,7 @@ def _is_noop_import(node: ast.AST) -> bool:
         return (
             node.level == 0
             and _is_preloaded(node.module)
-            and all(a.name != "*" and not a.name.startswith("_") for a in node.names)
+            and all(a.name != "*" and _attr_name_ok(a.name) for a in node.names)
         )
     return False
 

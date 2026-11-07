@@ -8,6 +8,7 @@ the file survives a daemon restart. search_tools shows it for tools without outp
 import contextlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,8 @@ from typing import Any
 SHAPE_MAX = 300
 _DEPTH = 2
 PROSE = "str (не JSON)"
+_MAX_KEYS = 20
+_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\-]{0,40}$")
 _TYPE_NAMES = {str: "str", int: "int", float: "float", bool: "bool", type(None): "None"}
 
 
@@ -28,6 +31,11 @@ def shape_of(value: Any, depth: int = _DEPTH) -> str:
     if isinstance(value, dict):
         if depth == 0 or not value:
             return "dict"
+        schema_like = all(isinstance(k, str) and _KEY_RE.match(k) for k in value)
+        if len(value) > _MAX_KEYS or not schema_like:
+            # Ключи-данные (id, email, произвольный текст недоверенного сервера) не пишем на
+            # диск и не отдаём в search_tools: это утечка и канал prompt injection.
+            return f"dict[str, {shape_of(next(iter(value.values())), depth - 1)}]"
         fields = ", ".join(f"{k}: {shape_of(v, depth - 1)}" for k, v in value.items())
         return "{" + fields + "}"
     if isinstance(value, list | tuple):

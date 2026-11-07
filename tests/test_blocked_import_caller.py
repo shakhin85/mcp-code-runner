@@ -1,3 +1,5 @@
+import ast
+
 import pytest
 
 from code_runner.executor import _rewrite_noop_imports, validate_code
@@ -79,3 +81,19 @@ def test_summary_by_caller():
     assert got["main"] == {"runs": 2, "failed": 1, "fail_rate": 0.5}
     assert got["haiku"] == {"runs": 1, "failed": 1, "fail_rate": 1.0}
     assert got["unknown"]["runs"] == 1
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "from skills.forgetful_compact import gi_frame",
+        "from skills.forgetful_compact import f_globals",
+        "from json import gi_frame",
+        "import skills.forgetful_compact.gi_frame",
+        "import skills.forgetful_compact.query",
+    ],
+)
+def test_noop_import_refuses_names_attr_rule_refuses(code: str) -> None:
+    from code_runner.executor import _is_noop_import
+
+    assert not _is_noop_import(ast.parse(code).body[0])
