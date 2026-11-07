@@ -53,6 +53,7 @@ from .metrics import (
     code_fingerprint,
     fix_fragment,
 )
+from .observed_shape import record as record_shape
 from .restore import make_restore, saved_output_name
 from .skills import SKILL_SERVERS, SkillsNamespace, active_skill, mark_fatal, note_tool_call
 from .sql_limit import inject_limit
@@ -1723,6 +1724,7 @@ class _ToolNamespace(_McpProxy):
                     shape = _result_shape(value, limit_applied, self._auto_limit)
                     if shape and self._stats is not None:
                         self._stats[shape] = self._stats.get(shape, 0) + 1
+                    record_shape(server_name_to_py(server), tool_name, value)
                     return value
                 stripped = combined.strip()
                 # Try JSON first (fast path, most MCP servers), then fall back to
@@ -1740,6 +1742,7 @@ class _ToolNamespace(_McpProxy):
                         shape = _result_shape(parsed, limit_applied, self._auto_limit)
                         if shape and self._stats is not None:
                             self._stats[shape] = self._stats.get(shape, 0) + 1
+                        record_shape(server_name_to_py(server), tool_name, parsed)
                         return parsed
                 if self._stats is not None:
                     self._stats["str_results"] += 1
@@ -1753,6 +1756,7 @@ class _ToolNamespace(_McpProxy):
                         self._stats.setdefault("error_text_calls", []).append(
                             f"{server}.{tool_name}"
                         )
+                record_shape(server_name_to_py(server), tool_name, combined)
                 return combined
             except BaseException as e:
                 success = False

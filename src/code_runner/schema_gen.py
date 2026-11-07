@@ -4,6 +4,8 @@ Converts MCP tool schemas into Python function stubs for LLM consumption.
 
 from mcp.types import Tool
 
+from .observed_shape import lookup
+
 _JSON_TYPE_MAP = {
     "string": "str",
     "integer": "int",
@@ -110,6 +112,9 @@ def tool_to_stub(server_py_name: str, tool: Tool) -> str:
         lines.append("# Args:")
         lines.extend(doc_lines)
     returns = _returns_line(tool.outputSchema)
+    if not returns:
+        observed = lookup(server_py_name, tool.name)
+        returns = f"# Returns (observed): {observed}" if observed else None
     if returns:
         lines.append(returns)
     py_tool_name = tool.name.replace("-", "_")
