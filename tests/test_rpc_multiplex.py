@@ -25,7 +25,9 @@ class _Result:
 
 class _SlowSession:
     async def call_tool(self, name, kwargs):
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(kwargs.get("delay", 0.5))
+        if kwargs.get("big"):
+            return _Result("x" * 1_500_000)
         if kwargs.get("fail"):
             return _Result("boom", is_error=True)
         return _Result(f"ok-{kwargs.get('n')}")
@@ -87,3 +89,69 @@ def test_budget_one_with_two_concurrent_calls_refuses_exactly_one():
     result, _ = _run(code, allow_side_effects=["srv.srv_createIssue:1"])
     assert result["success"] is True, result
     assert "['PermissionError', 'str']" in result["output"], result["output"]
+
+
+def test_big_args_and_replies_in_flight_do_not_deadlock():
+    code = (
+        "blob = 'y' * 1_200_000\n"
+        "r = await asyncio.gather(*[srv.srv_get(blob=blob, big=True, delay=0.05)"
+        " for _ in range(4)])\n"
+        "print([len(x) for x in r])\n"
+    )
+    result, wall = _run(code, raw_cap=10_000_000)
+    assert result["success"] is True, result
+    assert "[1500000, 1500000, 1500000, 1500000]" in result["output"]
+
+
+def test_unpicklable_reply_fails_only_its_awaiter_fast(monkeypatch):
+    orig = CodeExecutor._build_proxies
+
+    def build(self, *a, **kw):
+        proxies, skill_proxies = orig(self, *a, **kw)
+        for side in (proxies, skill_proxies):
+            real = side["srv"].srv_get
+
+            async def get(_real=real, **kwargs):
+                if kwargs.get("bad"):
+                    return lambda: 1  # not picklable
+                return await _real(**kwargs)
+
+            side["srv"].srv_get = get
+        return proxies, skill_proxies
+
+    monkeypatch.setattr(CodeExecutor, "_build_proxies", build)
+    code = (
+        "r = await asyncio.gather(srv.srv_get(n=1), srv.srv_get(bad=True),"
+        " return_exceptions=True)\n"
+        "print([type(x).__name__ for x in r])\n"
+    )
+    result, wall = _run(code)
+    assert result["success"] is True, result
+    assert "['str', 'PicklingError']" in result["output"]
+    assert wall < 8, wall
+
+
+def test_fire_and_forget_call_completes_and_is_counted():
+    code = (
+        "t = asyncio.gather(srv.srv_get(n=7))\n"
+        "await asyncio.sleep(0)\n"
+        "print('left')\n"
+    )
+    result, _ = _run(code)
+    assert result["success"] is True, result
+    assert "[cr] 1 tool call" in result["output"], result["output"]
+
+
+def test_cancelled_awaiter_does_not_poison_next_call():
+    code = (
+        "try:\n"
+        "    await asyncio.wait_for(srv.srv_get(n=1, delay=2), 0.2)\n"
+        "except TimeoutError:\n"
+        "    print('timed')\n"
+        "print(await srv.srv_get(n=2, delay=0.3))\n"
+    )
+    result, wall = _run(code)
+    assert result["success"] is True, result
+    assert "timed" in result["output"] and "ok-2" in result["output"]
+    assert "ok-1" not in result["output"]
+    assert wall < 6, wall

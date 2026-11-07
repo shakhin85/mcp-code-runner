@@ -22,6 +22,7 @@ import heapq
 import inspect
 import itertools
 import json
+import logging
 import math
 import multiprocessing
 import os
@@ -32,6 +33,7 @@ import statistics
 import string
 import sys
 import textwrap
+import threading
 import time
 import traceback
 import types
@@ -626,6 +628,7 @@ if _MP_START_METHOD == "forkserver":
         multiprocessing.get_context("forkserver").set_forkserver_preload(
             ["code_runner.subprocess_worker"]
         )
+_LOG = logging.getLogger(__name__)
 _EOF = object()  # sentinel: the worker pipe closed (child killed or crashed)
 
 # Server-name prefix → sqlglot dialect for auto-LIMIT injection.
@@ -2184,11 +2187,24 @@ class CodeExecutor:
         child_conn.close()  # only the child uses its end
         loop = asyncio.get_running_loop()
 
-        def _recv() -> Any:
-            try:
-                return parent_conn.recv()
-            except (EOFError, OSError):
-                return _EOF
+        inbox: asyncio.Queue = asyncio.Queue()
+
+        def _read_loop() -> None:
+            # Dedicated reader: keeps draining the pipe whatever the loop is
+            # doing, so a child send never blocks on a loop busy in its own send.
+            while True:
+                try:
+                    msg = parent_conn.recv()
+                except (EOFError, OSError):
+                    msg = _EOF
+                try:
+                    loop.call_soon_threadsafe(inbox.put_nowait, msg)
+                except RuntimeError:
+                    return
+                if msg is _EOF:
+                    return
+
+        threading.Thread(target=_read_loop, daemon=True, name="rpc-parent-reader").start()
 
         async def _handle(body: tuple) -> None:
             req_id, py_server, tool_attr, kwargs, skill_name, skill_side = body
@@ -2198,8 +2214,7 @@ class CodeExecutor:
             side = skill_proxies if skill_side else proxies
             try:
                 wrapper = getattr(side[py_server], tool_attr)
-                value = await wrapper(**kwargs)
-                reply = ("resp", (req_id, "ok", value))
+                reply = ("resp", (req_id, "ok", await wrapper(**kwargs)))
             # Exception, не BaseException: CancelledError от общего
             # wait_for обязан пройти наверх, иначе отмена глоталась,
             # ошибка уходила в child, и таймаут execute_code не срабатывал.
@@ -2207,15 +2222,20 @@ class CodeExecutor:
                 reply = ("resp", (req_id, "err", (type(e).__name__, str(e))))
             finally:
                 active_skill.reset(token)
-            # send is synchronous on the loop thread: replies never interleave.
-            with contextlib.suppress(OSError):  # child is gone; _serve sees EOF
+            try:
                 parent_conn.send(reply)
+            except OSError:
+                pass  # child is gone; _serve sees EOF
+            except Exception as e:  # the value did not pickle: fail this call only
+                _LOG.warning("rpc reply for %s.%s not sent: %r", py_server, tool_attr, e)
+                with contextlib.suppress(OSError):
+                    parent_conn.send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
 
         async def _serve() -> dict[str, Any]:
             handlers: set[asyncio.Task] = set()
             try:
                 while True:
-                    msg = await loop.run_in_executor(None, _recv)
+                    msg = await inbox.get()
                     if msg is _EOF:
                         return {
                             "success": False, "output": "",
@@ -2228,10 +2248,15 @@ class CodeExecutor:
                         handlers.add(task)
                         task.add_done_callback(handlers.discard)
                     elif tag == "done":
+                        # Calls the child left in flight finish (bounded by the run
+                        # timeout) so stats and the cost receipt are complete.
+                        await asyncio.gather(*handlers, return_exceptions=True)
                         return body
             finally:
-                for task in handlers:
-                    task.cancel()
+                pending = list(handlers)
+                for task in pending:
+                    task.cancel()  # no-op for finished ones; kills them on EOF/timeout
+                await asyncio.gather(*pending, return_exceptions=True)
 
         try:
             result = await asyncio.wait_for(_serve(), timeout=timeout)
