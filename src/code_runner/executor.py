@@ -645,6 +645,21 @@ def _sql_arg(kwargs: dict) -> str | None:
     return None
 
 
+def _sql_gate_reason(kwargs: dict, dialect: str) -> str | None:
+    """Refusal reason over EVERY present SQL argument; a non-str one is refused."""
+    for arg in _SQL_ARG_NAMES:
+        if arg not in kwargs:
+            continue
+        value = kwargs[arg]
+        if type(value) is not str:
+            return "SQL не разобран"
+        if value:
+            reason = non_read_reason(value, dialect)
+            if reason is not None:
+                return reason
+    return None
+
+
 def _dialect_for_server(server_name: str) -> str | None:
     if server_name in _SQL_DIALECT_BY_SERVER:
         return _SQL_DIALECT_BY_SERVER[server_name]
@@ -1672,14 +1687,12 @@ class _ToolNamespace(_McpProxy):
             # SQL servers: execute_sql is classified by the statement text, not
             # the name — anything but plain SELECT needs allow_side_effects.
             sql_reason = None
-            sql_arg = _sql_arg(kwargs)
             if (
                 not side_effecting
-                and sql_arg is not None
                 and self._sql_server_dialect is not None
                 and tool_name in _SQL_TOOL_NAMES
             ):
-                sql_reason = non_read_reason(kwargs[sql_arg], self._sql_server_dialect)
+                sql_reason = _sql_gate_reason(kwargs, self._sql_server_dialect)
                 side_effecting = sql_reason is not None
             if side_effecting:
                 entries = gate.entries(server, gated)
