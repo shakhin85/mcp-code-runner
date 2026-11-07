@@ -22,6 +22,7 @@ import heapq
 import inspect
 import itertools
 import json
+import logging
 import math
 import multiprocessing
 import os
@@ -32,6 +33,7 @@ import statistics
 import string
 import sys
 import textwrap
+import threading
 import time
 import traceback
 import types
@@ -626,6 +628,7 @@ if _MP_START_METHOD == "forkserver":
         multiprocessing.get_context("forkserver").set_forkserver_preload(
             ["code_runner.subprocess_worker"]
         )
+_LOG = logging.getLogger(__name__)
 _EOF = object()  # sentinel: the worker pipe closed (child killed or crashed)
 
 # Server-name prefix → sqlglot dialect for auto-LIMIT injection.
@@ -2184,55 +2187,122 @@ class CodeExecutor:
         child_conn.close()  # only the child uses its end
         loop = asyncio.get_running_loop()
 
-        def _recv() -> Any:
+        inbox: asyncio.Queue = asyncio.Queue()
+
+        def _read_loop() -> None:
+            # Dedicated reader: keeps draining the pipe whatever the loop is
+            # doing, so a child send never blocks on a loop busy in its own send.
+            # It owns the fd: closing it from another thread mid-recv could hand
+            # the number to the next Pipe.
             try:
-                return parent_conn.recv()
-            except (EOFError, OSError):
-                return _EOF
+                while True:
+                    try:
+                        msg = parent_conn.recv()
+                    except (EOFError, OSError):
+                        msg = _EOF
+                    except Exception as e:  # unpickle/memory failure
+                        msg = ("readerr", f"{type(e).__name__}: {e}")
+                    try:
+                        loop.call_soon_threadsafe(inbox.put_nowait, msg)
+                    except RuntimeError:
+                        return
+                    if msg is _EOF or msg[0] == "readerr":
+                        return
+            finally:
+                with contextlib.suppress(OSError):
+                    parent_conn.close()
+
+        threading.Thread(target=_read_loop, daemon=True, name="rpc-parent-reader").start()
+
+        async def _handle(body: tuple) -> None:
+            req_id, py_server, tool_attr, kwargs, skill_name, skill_side = body
+            token = active_skill.set(skill_name)
+            # skill_side is set only by the child's skill-side proxies
+            # (SHA-502); user code there reaches only the plain ones.
+            side = skill_proxies if skill_side else proxies
+            try:
+                wrapper = getattr(side[py_server], tool_attr)
+                reply = ("resp", (req_id, "ok", await wrapper(**kwargs)))
+            # Exception, не BaseException: CancelledError от общего
+            # wait_for обязан пройти наверх, иначе отмена глоталась,
+            # ошибка уходила в child, и таймаут execute_code не срабатывал.
+            except Exception as e:
+                reply = ("resp", (req_id, "err", (type(e).__name__, str(e))))
+            finally:
+                active_skill.reset(token)
+            try:
+                parent_conn.send(reply)
+            except OSError:
+                pass  # child is gone; _serve sees EOF
+            except Exception as e:  # the value did not pickle: fail this call only
+                _LOG.warning("rpc reply for %s.%s not sent: %r", py_server, tool_attr, e)
+                with contextlib.suppress(OSError):
+                    parent_conn.send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
+
+        names: dict[asyncio.Task, str] = {}
+        saved: list[dict[str, Any]] = []
+        orphans: list[str] = []
 
         async def _serve() -> dict[str, Any]:
-            while True:
-                msg = await loop.run_in_executor(None, _recv)
-                if msg is _EOF:
-                    return {
-                        "success": False, "output": "",
-                        "error": "isolation worker died before returning a result",
-                        "user_vars": None,
-                    }
-                tag, body = msg
-                if tag == "call":
-                    req_id, py_server, tool_attr, kwargs, skill_name, skill_side = body
-                    token = active_skill.set(skill_name)
-                    # skill_side is set only by the child's skill-side proxies
-                    # (SHA-502); user code there reaches only the plain ones.
-                    side = skill_proxies if skill_side else proxies
-                    try:
-                        wrapper = getattr(side[py_server], tool_attr)
-                        value = await wrapper(**kwargs)
-                        parent_conn.send(("resp", (req_id, "ok", value)))
-                    # Exception, не BaseException: CancelledError от общего
-                    # wait_for обязан пройти наверх, иначе отмена глоталась,
-                    # ошибка уходила в child, и таймаут execute_code не срабатывал.
-                    except Exception as e:
-                        parent_conn.send(("resp", (req_id, "err", (type(e).__name__, str(e)))))
-                    finally:
-                        active_skill.reset(token)
-                elif tag == "done":
-                    return body
+            handlers: set[asyncio.Task] = set()
+            try:
+                while True:
+                    msg = await inbox.get()
+                    if msg is _EOF:
+                        return {
+                            "success": False, "output": "",
+                            "error": "isolation worker died before returning a result",
+                            "user_vars": None,
+                        }
+                    tag, body = msg
+                    if tag == "readerr":
+                        return {
+                            "success": False, "output": "",
+                            "error": f"isolation pipe reader failed: {body}",
+                            "user_vars": None,
+                        }
+                    if tag == "call":
+                        task = asyncio.ensure_future(_handle(body))
+                        names[task] = f"{body[1]}.{body[2]}"
+                        handlers.add(task)
+                        task.add_done_callback(handlers.discard)
+                    elif tag == "done":
+                        # Keep the child's result; calls it left in flight may finish
+                        # (bounded by the remaining run timeout) so stats and the
+                        # cost receipt are complete. On timeout the saved result wins.
+                        saved.append(body)
+                        try:  # wait(), not gather(): cancelling it must not cancel the calls
+                            if handlers:
+                                await asyncio.wait(set(handlers))
+                        except asyncio.CancelledError:  # run timeout: name the stragglers
+                            orphans.extend(names[t] for t in handlers if not t.done())
+                            raise
+                        return body
+            finally:
+                pending = list(handlers)
+                for task in pending:
+                    task.cancel()  # no-op for finished ones; kills them on EOF/timeout
+                await asyncio.gather(*pending, return_exceptions=True)
 
         try:
             result = await asyncio.wait_for(_serve(), timeout=timeout)
         except TimeoutError:
-            result = {
-                "success": False, "output": "",
-                "error": f"Execution timed out after {timeout}s (isolation subprocess killed)",
-                "user_vars": None,
-            }
+            if saved:
+                result = dict(saved[0])
+                result["output"] = (result.get("output") or "") + (
+                    f"\n[cr] ⚠ {len(orphans)} незавершённых вызовов отменены по таймауту: "
+                    + ", ".join(orphans)
+                )
+            else:
+                result = {
+                    "success": False, "output": "",
+                    "error": f"Execution timed out after {timeout}s (isolation subprocess killed)",
+                    "user_vars": None,
+                }
         finally:
             if proc.is_alive():
                 proc.kill()
             await loop.run_in_executor(None, proc.join)
-            parent_conn.close()
 
         if session_id is not None and result.get("success"):
             st = self._sessions.get(session_id)

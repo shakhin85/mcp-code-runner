@@ -30,6 +30,7 @@ import json as _json
 import os
 import pickle
 import resource
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -146,38 +147,76 @@ class _RemoteProxy(_McpProxy):
 
 
 class _RpcBridge:
-    """Serializes proxy calls onto the single pipe.
+    """Multiplexes proxy calls over the single pipe by ``req_id``.
 
-    A lock keeps exactly one request in flight, so the blocking ``recv`` can be
-    offloaded to a thread without two threads reading the pipe at once. Concurrent
-    proxy calls (``asyncio.gather``) therefore serialize rather than overlap —
-    acceptable for a single-client, serialized executor.
+    Every call sends its request at once and awaits its own future.  A dedicated
+    daemon thread is the only reader of the pipe: it loops on ``recv`` without
+    needing the event loop and hands each response to the loop by ``req_id``.
+    A send therefore always has a live reader on the other side (the parent's
+    reader thread likewise), so two big messages in flight cannot deadlock, and
+    a blocked ``recv`` never holds up interpreter shutdown.
     """
 
     def __init__(self, conn) -> None:
         self._conn = conn
-        self._lock = asyncio.Lock()
         self._counter = 0
+        self._pending: dict[int, asyncio.Future] = {}
+        self._reader: threading.Thread | None = None
+        self._failed: str | None = None
+
+    def _read_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        while True:
+            try:
+                _tag, body = self._conn.recv()
+            except (EOFError, OSError):
+                body = "rpc pipe closed"
+            except Exception as e:  # unpickle/memory failure: the stream is unusable
+                body = f"rpc reader failed: {type(e).__name__}: {e}"
+            try:
+                loop.call_soon_threadsafe(self._deliver, body)
+            except RuntimeError:  # loop closed: the run is over
+                return
+            if isinstance(body, str):
+                return
+
+    def _deliver(self, body: tuple | str) -> None:
+        if isinstance(body, str):  # reader is gone: nobody will answer
+            self._failed = body
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(RuntimeError(body))
+            self._pending.clear()
+            return
+        fut = self._pending.pop(body[0], None)  # None: awaiter was cancelled
+        if fut is not None and not fut.done():
+            fut.set_result(body)
 
     async def __call__(
         self, py_server: str, tool_attr: str, kwargs: dict, skill_side: bool,
     ) -> Any:
         loop = asyncio.get_running_loop()
-        async with self._lock:
-            self._counter += 1
-            req_id = self._counter
-            # The gate runs parent-side (SHA-465). active_skill only shapes the
-            # refusal text; the pass comes from skill_side (SHA-502): user code
-            # here sets active_skill too while a skill runs, but never holds a
-            # skill-side proxy.
-            self._conn.send((
-                "call",
-                (req_id, py_server, tool_attr, kwargs, active_skill.get(), skill_side),
-            ))
-            _tag, body = await loop.run_in_executor(None, self._conn.recv)
-        # tag is always "resp" here; the parent never interleaves other tags
-        # while a call is outstanding.
-        _rid, status, payload = body
+        if self._failed is not None:
+            raise RuntimeError(self._failed)
+        if self._reader is None:
+            self._reader = threading.Thread(
+                target=self._read_loop, args=(loop,), daemon=True, name="rpc-reader",
+            )
+            self._reader.start()
+        self._counter += 1
+        req_id = self._counter
+        # The gate runs parent-side (SHA-465). active_skill only shapes the
+        # refusal text; the pass comes from skill_side (SHA-502): user code
+        # here sets active_skill too while a skill runs, but never holds a
+        # skill-side proxy.
+        self._conn.send((
+            "call",
+            (req_id, py_server, tool_attr, kwargs, active_skill.get(), skill_side),
+        ))
+        fut = loop.create_future()
+        self._pending[req_id] = fut
+        # A cancelled awaiter drops its entry; the late response is ignored.
+        fut.add_done_callback(lambda _f: self._pending.pop(req_id, None))
+        _rid, status, payload = await fut
         if status == "ok":
             return payload
         raise _make_remote_exc(payload[0], payload[1])

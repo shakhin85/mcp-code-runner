@@ -111,7 +111,8 @@ matches (`restore.py`, SHA-482) — no downstream call is repeated.
 - **Subprocess isolation** (default; `CODE_RUNNER_ISOLATION=inprocess` opts out) is the real
   containment: user code runs in a per-call child with `RLIMIT_AS`/`RLIMIT_CPU`/`RLIMIT_FSIZE`
   and a scrubbed environment; MCP calls are proxied back to the parent (live sessions never
-  reach the child). An escape, OOM, or CPU loop is confined to a killable process, not the
+  reach the child) and multiplexed by `req_id` — the parent runs one task per call, so
+  `asyncio.gather` over proxy calls overlaps end-to-end. An escape, OOM, or CPU loop is confined to a killable process, not the
   server. Persisted session vars must be picklable to cross the process boundary.
   Downstream credentials (pool configs, session headers) never reach the child, so
   subprocess keeps them out of user code by construction. In-process relies on the
