@@ -18,6 +18,8 @@ MCP server that exposes a single Python `execute_code` tool. User code runs at m
   `skill_call` events (one per `skills.<name>.<fn>` call, child calls included) feed
   `summarize_skills` behind `get_metrics(skills=True)`: calls, error %, last call per
   function and trim candidates (unused / failing, thresholds `SKILL_TRIM_*`, SHA-484).
+  `get_metrics(servers=True)` (`summarize_servers`): per server calls, median/p90 bytes and verdict
+  `sandbox` (median ≥ `SANDBOX_MEDIAN_BYTES` = 5000) / `direct` / `direct-sql` (SQL server below it).
   A skill that raises after ≥1 tool call gets `HINT: … fallback — raw-tools из replaces: …`
   (SHA-523; failing before the first call is bad input, no HINT); its
   `fallback` field plus the next block's `ok_tools` give the `fallback.share` there.
@@ -62,6 +64,9 @@ Any run that calls MCP tools appends one line:
 
 A single call whose output passes through unaggregated also prints
 `no aggregation happened here` — that run should have been a direct MCP call.
+The same receipt adds `HINT: напечатано N% сырья …` (printed ≥ 50% of ≥ 5KB raw, not shown when the
+pass-through line already fires) and `HINT: агрегацию … делай в SQL …` (1–2 SQL-tool calls, raw SQL
+answer ≥ 2x the printed output).
 The receipt makes both the saving and its absence visible, so routing through the
 sandbox stops being a matter of faith.
 
