@@ -1209,6 +1209,11 @@ def test_sql_aggregation_hint_silent_outside_its_case():
     # tiny SQL answer
     tiny = {"tool_calls": 1, "raw_tool_bytes": 800, "sql_calls": 1, "sql_bytes": 800}
     assert "агрегацию" not in _append_cost_footer("1", tiny, elapsed_ms=10)
+    # SHA-992: два сервера — цепочка между базами, одним SQL не собрать
+    cross = {**base, "sql_calls": 2, "sql_servers": {"mssql", "postgres_lime_prod"}}
+    assert "агрегацию" not in _append_cost_footer("42 rows", cross, elapsed_ms=10)
+    one = {**base, "sql_calls": 2, "sql_servers": {"mssql"}}
+    assert "агрегацию" in _append_cost_footer("42 rows", one, elapsed_ms=10)
 
 
 # --- signature hint on argument-shape TypeErrors ---------------------------
