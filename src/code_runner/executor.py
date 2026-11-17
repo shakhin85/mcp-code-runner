@@ -819,6 +819,8 @@ def _append_cost_footer(output: str, stats: dict[str, Any], elapsed_ms: float) -
     sql_bytes = stats.get("sql_bytes", 0)
     if (
         1 <= stats.get("sql_calls", 0) <= 2
+        # SHA-992: цепочка между базами одним SQL не собирается
+        and len(stats.get("sql_servers", ())) <= 1
         and sql_bytes >= HINT_MIN_RAW_BYTES
         and sql_bytes >= sent * SQL_AGG_RATIO
     ):
@@ -1873,6 +1875,7 @@ class _ToolNamespace(_McpProxy):
                     if tool_name in SQL_TOOLS:
                         self._stats["sql_calls"] = self._stats.get("sql_calls", 0) + 1
                         self._stats["sql_bytes"] = self._stats.get("sql_bytes", 0) + out_bytes
+                        self._stats.setdefault("sql_servers", set()).add(server)
                 if self._recorder is not None:
                     with contextlib.suppress(Exception):
                         self._recorder.record({
