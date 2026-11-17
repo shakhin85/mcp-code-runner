@@ -35,6 +35,9 @@ class _PoolHost:
 
     def __init__(self, project_dir: Path | str, configs: dict):
         self.pool = MCPClientPool()
+        # Подключения стартуют сразу: pool.configs и wait_ready(names) доступны до
+        # конца startup — вызов не ждёт самый медленный сервер пула (SHA-994).
+        self.pool.begin(configs=configs)
         self.project_dir = project_dir
         self.server_names = frozenset(configs)
         self._stop = asyncio.Event()
@@ -46,6 +49,10 @@ class _PoolHost:
     async def _run(self, configs: dict) -> None:
         try:
             await self.pool.startup(configs=configs)
+            logger.info(
+                f"Pool {self.project_dir} ready: connected {self.pool.connected_servers()}, "
+                f"failed {sorted(self.pool.failed)}"
+            )
         except Exception as e:
             logger.warning(f"Project pool startup failed for {self.project_dir}: {e}")
         finally:

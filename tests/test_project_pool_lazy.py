@@ -20,10 +20,12 @@ def _ctx(registry):
 
 
 def _setup(monkeypatch, tmp_path, release: asyncio.Event):
-    async def slow_startup(self, skip_servers=None, configs=None):
+    async def slow_connect(self, name, cfg):
         await release.wait()
+        self.sessions[name] = object()
+        self.tools[name] = []
 
-    monkeypatch.setattr(project_pools.MCPClientPool, "startup", slow_startup)
+    monkeypatch.setattr(project_pools.MCPClientPool, "_connect", slow_connect)
     monkeypatch.setattr(
         project_pools,
         "load_project_server_configs",

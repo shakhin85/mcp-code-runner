@@ -1,6 +1,7 @@
 
 import pytest
 
+from code_runner.client_pool import MCPClientPool
 from code_runner.skills import (
     SkillLoader,
     SkillsNamespace,
@@ -102,6 +103,7 @@ def _ctx(tmp_path, monkeypatch, isolation):
     executor = CodeExecutor(_Pool(), isolation=isolation, mem_limit_mb=1024)
     ctx = SimpleNamespace(request_context=SimpleNamespace(lifespan_context={
         "executor": executor, "skills_loader": SkillLoader(skills_dir),
+        "pool": MCPClientPool(),
     }))
     return ctx, skills_dir, executor
 

@@ -105,6 +105,33 @@ class MCPClientPool:
         # cached Mcp-Session-Id got invalidated) can be re-established on demand.
         self.configs: dict[str, ServerConfig] = {}
         self._reconnect_locks: dict[str, asyncio.Lock] = {}
+        # name -> попытка подключения (SHA-994): вызов ждёт только свой сервер,
+        # а не самый медленный из всех (CONNECTION_TIMEOUT мёртвого сервера).
+        self._connecting: dict[str, asyncio.Task] = {}
+
+    def begin(
+        self,
+        skip_servers: set[str] | None = None,
+        configs: dict[str, ServerConfig] | None = None,
+    ) -> None:
+        """Start connecting to every server without waiting; a name already started is kept."""
+        if configs is None:
+            configs = load_server_configs(skip_servers)
+        for name, cfg in configs.items():
+            if name in self._connecting:
+                continue
+            self.configs[name] = cfg
+            self._connecting[name] = asyncio.create_task(
+                self._safe_connect(name, cfg), name=f"mcp-connect:{name}"
+            )
+
+    async def wait_ready(self, names: set[str] | None = None) -> None:
+        """Wait until these servers (all when None) connected or failed.
+
+        `asyncio.wait` не отменяет попытки, когда отменяют ждущего."""
+        tasks = [t for n, t in self._connecting.items() if names is None or n in names]
+        if tasks:
+            await asyncio.wait(tasks)
 
     async def startup(
         self,
@@ -116,14 +143,8 @@ class MCPClientPool:
         configs: explicit server set (per-project pools in daemon mode);
         default — read from the global config + project configs.
         """
-        if configs is None:
-            configs = load_server_configs(skip_servers)
-
-        tasks = [
-            self._safe_connect(name, cfg)
-            for name, cfg in configs.items()
-        ]
-        await asyncio.gather(*tasks)
+        self.begin(skip_servers, configs)
+        await self.wait_ready()
 
     async def _safe_connect(self, name: str, cfg: ServerConfig) -> None:
         try:
@@ -239,6 +260,8 @@ class MCPClientPool:
             await self._connect(server_name, cfg)
 
     async def call_tool(self, server_name: str, tool_name: str, arguments: dict):
+        if server_name not in self.sessions:
+            await self.wait_ready({server_name})
         session = self.sessions.get(server_name)
         if session is None:
             raise RuntimeError(f"Server '{server_name}' is not connected")
@@ -257,6 +280,10 @@ class MCPClientPool:
             return await session.call_tool(tool_name, arguments)
 
     async def shutdown(self) -> None:
+        pending = [t for t in self._connecting.values() if not t.done()]
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         hosts = list(self._hosts.values())
         self._hosts.clear()
         self.sessions.clear()

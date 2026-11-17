@@ -38,6 +38,7 @@ from .metrics import (
     summarize_servers,
     summarize_skills,
 )
+from .prelude import ALIASES as PRELUDE_ALIASES
 from .project_pools import STARTUP_TIMEOUT, ProjectPoolRegistry, _PoolHost
 from .schema_gen import generate_server_overview, generate_stubs_for_server
 from .skills import (
@@ -69,10 +70,6 @@ SKILLS_DIR = Path.home() / ".claude" / "code-runner-skills"
 
 
 def _build_state(pool: MCPClientPool, project_pools) -> dict[str, Any]:
-    logger.info(f"Connected: {pool.connected_servers()}")
-    if pool.failed:
-        logger.warning(f"Failed: {pool.failed}")
-
     recorder = recorder_from_env()
     if recorder is not None:
         logger.info(f"Metrics enabled: {recorder.path}")
@@ -104,14 +101,9 @@ async def _daemon_state_singleton() -> dict[str, Any]:
     global _daemon_state
     async with _daemon_lock:
         if _daemon_state is None:
+            # Не ждём подключения всех серверов (SHA-994): execute_code ждёт
+            # только серверы, которые называет код (_servers_needed).
             host = _PoolHost("global", load_server_configs(SKIP_SERVERS))
-            try:
-                await asyncio.wait_for(host.ready.wait(), timeout=STARTUP_TIMEOUT)
-            except TimeoutError:
-                # Tear the host down before propagating, or the orphaned task
-                # would duplicate the pool when the next session retries.
-                await host.stop()
-                raise
             registry = ProjectPoolRegistry(
                 global_names=set(host.pool.configs), skip_servers=SKIP_SERVERS
             )
@@ -131,6 +123,9 @@ async def lifespan(server: FastMCP):
     # Проектные серверы уже смержены в global pool (project_pools не нужен).
     pool = MCPClientPool()
     await pool.startup(skip_servers=SKIP_SERVERS)
+    logger.info(f"Connected: {pool.connected_servers()}")
+    if pool.failed:
+        logger.warning(f"Failed: {pool.failed}")
     try:
         yield _build_state(pool, None)
     finally:
@@ -189,22 +184,28 @@ async def _resolve_project_dir(ctx: Context) -> "Path | None":
     return project_dir
 
 
-def _names_any_server(code: str, server_names: frozenset[str]) -> bool:
-    """True if code mentions a py-name of these servers; unparsable code counts as yes."""
-    py_names = {server_name_to_py(name) for name in server_names}
+# Имена, за которыми вызовы серверов не видны в коде: skill-side прокси и алиасы prelude.
+_INDIRECT_NAMES = frozenset({"skills"}) | frozenset(alias for alias, _, _ in PRELUDE_ALIASES)
+
+
+def _servers_needed(code: str, server_names: frozenset[str]) -> set[str] | None:
+    """Servers this code names by py-name; None (= all) for unparsable code or a
+    skill/prelude call, which reaches servers the code does not name (SHA-994)."""
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return True
-    return any(isinstance(n, ast.Name) and n.id in py_names for n in ast.walk(tree))
+        return None
+    used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+    if used & _INDIRECT_NAMES:
+        return None
+    return {name for name in server_names if server_name_to_py(name) in used}
 
 
 async def _project_pool(ctx: Context, code: str | None = None) -> "MCPClientPool | None":
     """Per-project pool for this client session (daemon mode), else None.
 
-    With `code`, waits for the pool's startup only if the code names one of the
-    project servers (SHA-456): a run on global servers alone must not stall
-    behind a slow project server.
+    With `code`, waits only for the project servers the code names (SHA-456,
+    SHA-994): a run must not stall behind a slow or dead server it does not use.
     """
     registry: ProjectPoolRegistry | None = ctx.request_context.lifespan_context.get(
         "project_pools"
@@ -218,9 +219,10 @@ async def _project_pool(ctx: Context, code: str | None = None) -> "MCPClientPool
         host = await registry.host_for(project_dir)
         if host is None:
             return None
-        if code is not None and not _names_any_server(code, host.server_names):
+        needed = None if code is None else _servers_needed(code, host.server_names)
+        if needed is not None and not needed:
             return None
-        await asyncio.wait_for(host.ready.wait(), timeout=STARTUP_TIMEOUT)
+        await asyncio.wait_for(host.pool.wait_ready(needed), timeout=STARTUP_TIMEOUT)
         return host.pool
     except Exception as e:
         logger.warning(f"Project pool unavailable for {project_dir}: {e}")
@@ -425,6 +427,7 @@ async def _merged_views(
     ctx: Context, pool: MCPClientPool
 ) -> tuple[dict[str, str], dict[str, list[Tool]]]:
     """Global + project-pool views as COPIES (pool internals must stay clean)."""
+    await pool.wait_ready()
     py_name_map = dict(pool.py_name_map())
     tools_by_server = dict(pool.get_all_tools())
     extra = await _project_pool(ctx)
@@ -573,6 +576,8 @@ async def execute_code(
             only after checking the content is safe to write.
     """
     executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
+    pool: MCPClientPool = ctx.request_context.lifespan_context["pool"]
+    await pool.wait_ready(_servers_needed(code, frozenset(pool.configs)))
 
     result = await executor.execute(
         code,
@@ -712,6 +717,8 @@ async def save_skill(
     executor: CodeExecutor = ctx.request_context.lifespan_context["executor"]
     trial_output = ""
     if example:
+        pool: MCPClientPool = ctx.request_context.lifespan_context["pool"]
+        await pool.wait_ready(_servers_needed(example, frozenset(pool.configs)))
         with stage_skills(SKILLS_DIR, name, code, description) as root:
             result = await executor.execute(
                 example,
