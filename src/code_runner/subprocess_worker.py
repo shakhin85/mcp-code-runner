@@ -46,6 +46,7 @@ from .executor import (
     _limit_error_hint,
     _McpProxy,
     _name_error_hint,
+    _positional_args_error,
     _signature_hint,
     _type_error_hint,
     make_safe_builtins,
@@ -128,15 +129,19 @@ class _RemoteProxy(_McpProxy):
     """Stand-in for one MCP server: each tool becomes an async method that RPCs
     the real call back to the parent over the pipe."""
 
-    def __init__(self, py_name: str, tool_attrs: list[str], rpc, skill_side: bool = False) -> None:
+    def __init__(
+        self, py_name: str, tools: dict[str, list[str]], rpc, skill_side: bool = False
+    ) -> None:
         self._py_name = py_name
         self._rpc = rpc
         self._skill_side = skill_side
-        for attr in tool_attrs:
-            setattr(self, attr, self._make(attr))
+        for attr, params in tools.items():
+            setattr(self, attr, self._make(attr, params))
 
-    def _make(self, attr: str):
-        async def call(**kwargs):
+    def _make(self, attr: str, params: list[str]):
+        async def call(*args, **kwargs):
+            if args:
+                raise _positional_args_error(self._py_name, attr, params)
             note_tool_call()
             return await self._rpc(self._py_name, attr, kwargs, self._skill_side)
         call.__name__ = attr

@@ -1604,6 +1604,20 @@ class _McpProxy:
     """
 
 
+def _tool_params(tool: Any) -> list[str]:
+    """Keyword parameters of an MCP tool, read from its JSON input schema."""
+    schema = getattr(tool, "inputSchema", None) or {}
+    return list(schema.get("properties") or {})
+
+
+def _positional_args_error(server: str, tool: str, params: list[str]) -> TypeError:
+    """Proxies take keyword arguments only: they become the tool's JSON arguments."""
+    form = ", ".join(f"{p}=..." for p in params) or "..."
+    return TypeError(
+        f"{server}.{tool}() принимает только keyword-аргументы: {server}.{tool}({form})"
+    )
+
+
 class _ToolNamespace(_McpProxy):
     """Proxy object representing a single MCP server's tools in exec namespace."""
 
@@ -1683,7 +1697,13 @@ class _ToolNamespace(_McpProxy):
         out_schema = getattr(self._tools.get(tool_name), "outputSchema", None)
         wrap_result = bool(isinstance(out_schema, dict) and out_schema.get("x-fastmcp-wrap-result"))
 
-        async def wrapper(**kwargs):
+        params = _tool_params(self._tools.get(tool_name))
+
+        async def wrapper(*args, **kwargs):
+            if args:
+                raise _positional_args_error(
+                    server.replace("-", "_"), tool_name.replace("-", "_"), params
+                )
             note_tool_call()
             # SHA-123: deny-by-default gate on side-effecting tools — checked
             # before anything else in the call (no stats/recorder, no
@@ -2152,7 +2172,10 @@ class CodeExecutor:
             allow_tainted,
         )
         servers = [
-            {"py_name": py_name, "tools": [n.replace("-", "_") for n in proxy._tools]}
+            {
+                "py_name": py_name,
+                "tools": {n.replace("-", "_"): _tool_params(t) for n, t in proxy._tools.items()},
+            }
             for py_name, proxy in proxies.items()
         ]
 
