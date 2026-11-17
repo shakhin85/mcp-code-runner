@@ -317,3 +317,32 @@ def test_name_error_gets_no_past_fix(tmp_path):
     err = "Traceback (most recent call last):\nNameError: name 'q' is not defined"
     idx = _index(tmp_path, [_err("a", err, 1), _ok("a", days_ago=1)])
     assert idx.hint(err) == ""
+
+
+# --- SHA-993: строка фикса — вызов той же функции, а не соседнее присваивание ---
+
+
+def test_fix_prefers_line_calling_same_function():
+    """Наблюдение 17.11.2026: `srv = X` и `srv.tool(sql=…)` делят с упавшей строкой по
+    одному имени; фикс — строка с тем же вызовом."""
+    failed = 'await X.execute_sql("select 1")'
+    fixed = 'srv = X\nrows = await srv.execute_sql(sql="select 1")\nprint(rows)'
+    assert metrics.fix_fragment(failed, fixed, 1) == 'rows = await srv.execute_sql(sql="…")'
+
+
+def test_fix_skips_line_already_in_failed_block():
+    failed = 'srv = X\nX.tool("a")'
+    fixed = 'srv = X\nX.tool(sql="a")'
+    frag = metrics.fix_fragment(failed, fixed, 2)
+    assert "srv = X" not in frag
+    assert frag == 'X.tool(sql="…")'
+
+
+def test_self_fixing_error_gets_no_past_fix(tmp_path):
+    """TypeError прокси уже называет форму вызова (b746f50): HINT прошлого фикса не нужен."""
+    err = (
+        "Traceback (most recent call last):\nTypeError: pg.execute_sql() принимает только "
+        "keyword-аргументы: pg.execute_sql(sql=...)"
+    )
+    idx = _index(tmp_path, [_err("a", err, 1), _ok("a", days_ago=1)])
+    assert idx.hint(err) == ""

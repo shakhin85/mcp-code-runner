@@ -83,12 +83,16 @@ _TOOL_RE = re.compile(r"\b([A-Za-z_]\w*\.[A-Za-z_]\w*) returned an error:")
 _STRING_LITERAL_RE = re.compile(r"""(["'])(?:\\.|(?!\1).)*(?:\1|$)""")
 _DIGITS_RE = re.compile(r"\d+")
 _IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+_CALL_RE = re.compile(r"([A-Za-z_]\w*)\s*\(")
 _COMMON_NAMES = frozenset(keyword.kwlist) | frozenset(dir(builtins))
 _MESSAGE_KEY_MAX = 200
 # NameError чинит статический HINT executor'а (ростер прокси, dir/getattr, переменная
 # прошлого блока). Имя в сообщении — переменная своей сессии: фикс `q` из чужой
 # сессии к ней не относится (за 7д до 2026-10-30 все 5 таких HINT были чужими).
 _NO_PAST_FIX_CLASSES = frozenset({"NameError"})
+# Ошибка, которая сама называет фикс: TypeError прокси на позиционный аргумент
+# (executor._positional_args_error / subprocess_worker) уже несёт форму вызова.
+_SELF_FIXING_MARKERS = ("принимает только keyword-аргументы:",)
 
 
 def _message_key(text: str) -> str:
@@ -122,9 +126,17 @@ def _names(line: str) -> set[str]:
     return set(_IDENT_RE.findall(bare)) - _COMMON_NAMES
 
 
+def _calls(line: str) -> set[str]:
+    """Имена вызываемых функций и методов строки (`srv.execute_sql(` → execute_sql)."""
+    bare = _STRING_LITERAL_RE.sub("''", line)
+    return set(_CALL_RE.findall(bare)) - _COMMON_NAMES
+
+
 def fix_fragment(failed_code: str, fixed_code: str, failed_line: int | None) -> str:
     """Новая строка fixed_code с наибольшим числом общих имён с упавшей строкой, до 300 символов.
 
+    При равном числе общих имён побеждает строка, которая вызывает ту же функцию,
+    что и упавшая: `srv = X` делит с `X.tool("a")` имя X, но фикс — `srv.tool(sql=…)`.
     Упавшая строка неизвестна или общих имён нет — пусто: первая новая строка
     следующего блока обычно чужая (новая переменная, print) и давала нерелевантный
     HINT. Строковые литералы заменены на '…': в metrics.jsonl не должны попадать
@@ -133,15 +145,19 @@ def fix_fragment(failed_code: str, fixed_code: str, failed_line: int | None) -> 
     failed = failed_code.splitlines()
     if failed_line is None or not 1 <= failed_line <= len(failed):
         return ""
-    anchor = _names(failed[failed_line - 1])
+    anchor_line = failed[failed_line - 1]
+    anchor, anchor_calls = _names(anchor_line), _calls(anchor_line)
     old = {ln.strip() for ln in failed}
-    best, score = "", 0
+    best, score = "", (0, 0)
     for line in (ln.strip() for ln in fixed_code.splitlines()):
         if not line or line in old:
             continue
         shared = len(anchor & _names(line))
-        if shared > score:
-            best, score = line, shared
+        if not shared:
+            continue
+        cand = (int(bool(anchor_calls & _calls(line))), shared)
+        if cand > score:
+            best, score = line, cand
     best = _STRING_LITERAL_RE.sub(lambda m: m.group(1) + "…" + m.group(1), best)
     return best[:PAST_FIX_MAX_CHARS]
 
@@ -196,6 +212,8 @@ class PastFixIndex:
         """Одна строка HINT (с ведущим переводом строки) или пустая строка."""
         key = error_key(error)
         if key is None or key[0] in _NO_PAST_FIX_CLASSES:
+            return ""
+        if any(m in (error or "") for m in _SELF_FIXING_MARKERS):
             return ""
         try:
             frag = self._load().get(key)
