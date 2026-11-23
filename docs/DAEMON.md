@@ -23,6 +23,34 @@ Claude Code (любая сессия) ──HTTP──> :8030 (code-runner-proxy
 требует backend (`Requires=`), при простое proxy выходит и backend гаснет
 (`StopWhenUnneeded=true`).
 
+## Установка одной командой
+
+```bash
+scripts/install-daemon.sh [--dry-run] [--unit-dir DIR]
+```
+
+Шаблоны юнитов лежат в `deploy/systemd/`. Плейсхолдер один: `@REPO_DIR@` —
+путь репо, скрипт берёт его из `BASH_SOURCE` (симлинк разворачивается).
+Специфайер `%h` остаётся для systemd.
+
+| Шаг | Поведение |
+|---|---|
+| юниты | `proxy.socket`, `proxy.service`, `backend.service`, `limits.conf` — всегда; `forgetful-ready.conf` — только если у хоста есть `forgetful-proxy.socket` (иначе строка о пропуске) |
+| повторный запуск | файл с тем же содержимым не трогается; запись атомарная (tmp + mv); без изменений печатает `no changes` |
+| `code-runner.env` | нет файла — создаётся шаблон с комментариями, `chmod 600`; существующий не читается и не печатается |
+| systemd | `daemon-reload` (если юниты изменились) и `enable --now code-runner-proxy.socket`; backend без `[Install]` |
+| linger | при `Linger=no` печатает `loginctl enable-linger <user>`, сам не включает |
+| `--dry-run` | печатает план, ничего не пишет |
+| `--unit-dir DIR` | юниты в DIR (по умолчанию `~/.config/systemd/user`); systemctl, loginctl и smoke не вызываются |
+| smoke | `curl` на `:8030/mcp` до 60 с (`CODE_RUNNER_SMOKE_TIMEOUT`); rc≠0 при провале |
+
+Переменные: `CODE_RUNNER_ENV_DIR` (по умолчанию `~/.config/code-runner`),
+`CODE_RUNNER_SMOKE_URL`, `CODE_RUNNER_UNIT_SEARCH_PATH` (где искать `forgetful-proxy.socket`).
+
+В конце скрипт печатает команду переключения MCP-конфига на
+`http://127.0.0.1:8030/mcp`; сам конфиг Claude Code не правит. Эталон юнитов для
+тестов — копия живых юнитов lns-srv-tempdwh внутри `tests/test_install_daemon.py`.
+
 ## Файлы
 
 | Что | Где |

@@ -1,0 +1,8 @@
+[Unit]
+Description=code-runner MCP socket (client-facing :8030)
+
+[Socket]
+ListenStream=127.0.0.1:8030
+
+[Install]
+WantedBy=sockets.target

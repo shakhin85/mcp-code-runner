@@ -1,0 +1,19 @@
+[Unit]
+Description=code-runner MCP backend (streamable-http, on-demand)
+After=network.target
+# гасится автоматически, когда прокси перестаёт его требовать (idle)
+StopWhenUnneeded=true
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/code-runner/code-runner.env
+ExecStart=%h/.local/bin/uv --directory @REPO_DIR@ run code-runner
+# держим unit «стартующим», пока порт реально не поднимется (boot ~8с: коннект к downstream MCP)
+ExecStartPost=/bin/bash -c 'until curl -s -o /dev/null http://127.0.0.1:8031/mcp; do sleep 0.5; done'
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=120
+# не глушить мгновенно при разрыве, дать дослать ответ
+TimeoutStopSec=15
+
+# НЕТ [Install] — юнит не включается сам, его поднимает proxy по требованию
