@@ -135,3 +135,32 @@ def test_global_config_falls_back_to_claude_json(tmp_path, monkeypatch):
     (tmp_path / ".claude.json").write_text("{}", encoding="utf-8")
 
     assert get_claude_config_path() == tmp_path / ".claude.json"
+
+
+def test_http_headers_helper_output_becomes_headers(tmp_path, monkeypatch):
+    """headersHelper печатает JSON заголовков и перекрывает статический headers (SHA-1082)."""
+    config = _write_config(tmp_path, {
+        "bus": {
+            "type": "http",
+            "url": "http://127.0.0.1:7391/mcp",
+            "headers": {"Authorization": "Bearer stale", "X-Static": "1"},
+            "headersHelper": "printf '{\"Authorization\":\"Bearer fresh\"}'",
+        },
+    })
+    monkeypatch.setattr("code_runner.config_reader.get_claude_config_path", lambda: config)
+
+    assert load_server_configs()["bus"].env == {"Authorization": "Bearer fresh", "X-Static": "1"}
+
+
+def test_http_headers_helper_failure_keeps_static_headers(tmp_path, monkeypatch):
+    config = _write_config(tmp_path, {
+        "bus": {
+            "type": "http",
+            "url": "http://127.0.0.1:7391/mcp",
+            "headers": {"X-Static": "1"},
+            "headersHelper": "exit 3",
+        },
+    })
+    monkeypatch.setattr("code_runner.config_reader.get_claude_config_path", lambda: config)
+
+    assert load_server_configs()["bus"].env == {"X-Static": "1"}

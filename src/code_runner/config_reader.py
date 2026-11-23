@@ -12,11 +12,14 @@ Supports:
 import json
 import logging
 import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 logger = logging.getLogger(__name__)
+
+HEADERS_HELPER_TIMEOUT = 10  # seconds
 
 
 @dataclass
@@ -99,6 +102,29 @@ def _expand_env(env: dict) -> dict[str, str]:
     return {k: os.path.expandvars(v) if isinstance(v, str) else v for k, v in env.items()}
 
 
+def _helper_headers(name: str, command: str) -> dict[str, str]:
+    """Run a Claude Code `headersHelper`: a shell command printing a JSON object of headers.
+
+    Без него http-сервер с токеном в helper получал 401, а клиент MCP ждал его
+    до CONNECTION_TIMEOUT — stdio-запуск не укладывался в 30 с (SHA-1082).
+    """
+    try:
+        out = subprocess.run(
+            command, shell=True, capture_output=True, text=True,
+            timeout=HEADERS_HELPER_TIMEOUT, check=True,
+        ).stdout
+        headers = json.loads(out)
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError) as e:
+        logger.warning(f"headersHelper of '{name}' failed: {type(e).__name__}")
+        return {}
+    if not isinstance(headers, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in headers.items()
+    ):
+        logger.warning(f"headersHelper of '{name}' printed no JSON object of strings")
+        return {}
+    return headers
+
+
 def _parse_servers(
     data: dict,
     skip: set[str],
@@ -117,13 +143,18 @@ def _parse_servers(
         transport = cfg.get("type", "stdio")
 
         if transport == "http":
+            helper = cfg.get("headersHelper")
             servers[name] = ServerConfig(
                 name=name,
                 transport="http",
                 url=cfg.get("url", ""),
                 # Claude Code хранит заголовки http-сервера в "headers";
                 # "env" — старый путь этого конфига.
-                env=_expand_env({**cfg.get("env", {}), **cfg.get("headers", {})}),
+                # "headersHelper" — команда, печатающая заголовки; перекрывает статические.
+                env={
+                    **_expand_env({**cfg.get("env", {}), **cfg.get("headers", {})}),
+                    **(_helper_headers(name, helper) if helper else {}),
+                },
             )
         else:
             servers[name] = ServerConfig(
