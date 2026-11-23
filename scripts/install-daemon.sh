@@ -7,6 +7,7 @@ SCRIPT="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO_DIR="$(dirname "$(dirname "$SCRIPT")")"
 TEMPLATES="$REPO_DIR/deploy/systemd"
 UNIT_DIR="$HOME/.config/systemd/user"
+# CODE_RUNNER_ENV_DIR — только для тестов: юнит читает %h/.config/code-runner/code-runner.env
 ENV_DIR="${CODE_RUNNER_ENV_DIR:-$HOME/.config/code-runner}"
 ENV_FILE="$ENV_DIR/code-runner.env"
 SYSTEM_UNIT_DIRS="${CODE_RUNNER_UNIT_SEARCH_PATH-/etc/systemd/user:/usr/lib/systemd/user:/lib/systemd/user}"
@@ -26,8 +27,8 @@ usage() {
   --dry-run       напечатать план, ничего не писать
   --unit-dir DIR  каталог юнитов (по умолчанию ~/.config/systemd/user);
                   с ним systemctl, loginctl и smoke не вызываются
-Переменные: CODE_RUNNER_ENV_DIR, CODE_RUNNER_SMOKE_TIMEOUT (с, по умолчанию 60),
-  CODE_RUNNER_SMOKE_URL, CODE_RUNNER_UNIT_SEARCH_PATH.
+Переменные: CODE_RUNNER_SMOKE_TIMEOUT (с, по умолчанию 60), CODE_RUNNER_SMOKE_URL,
+  CODE_RUNNER_UNIT_SEARCH_PATH.
 EOF
 }
 
@@ -91,23 +92,23 @@ ensure_env() {
   fi
   mkdir -p "$ENV_DIR"
   make_tmp "$ENV_DIR" code-runner.env
-  cat > "$CURRENT_TMP" <<'EOF'
+  cat > "$CURRENT_TMP" <<EOF
 # Окружение демона code-runner (EnvironmentFile юнита code-runner-backend.service).
 # Файл содержит секреты: права 0600, скрипт установки его не перезаписывает.
 # Клиентский env из конфига Claude Code до демона не доезжает — задавай здесь.
-# Раскомментируй и поправь значения (см. docs/DAEMON.md):
-#
-# CODE_RUNNER_TRANSPORT=streamable-http
-# FASTMCP_HOST=127.0.0.1
-# FASTMCP_PORT=8031
-# CODE_RUNNER_NO_PROJECT_CONFIG=1
+# Ниже настройки, без которых backend не слушает :8031 (см. docs/DAEMON.md).
+# Секреты и необязательные переменные добавляй сюда же.
+CODE_RUNNER_TRANSPORT=streamable-http
+FASTMCP_HOST=127.0.0.1
+FASTMCP_PORT=8031
+CODE_RUNNER_NO_PROJECT_CONFIG=1
+PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 # CODE_RUNNER_SKIP_SERVERS=
-# PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
 EOF
   chmod 600 "$CURRENT_TMP"
   mv "$CURRENT_TMP" "$ENV_FILE"
   CURRENT_TMP=""
-  echo "created: $ENV_FILE (0600, шаблон с комментариями: заполни и перезапусти backend)"
+  echo "created: $ENV_FILE (0600, настройки HTTP-режима; секреты добавь сам)"
 }
 
 check_linger() {

@@ -242,7 +242,13 @@ def test_env_file_created_0600_with_comments(tmp_path):
     env_file = tmp_path / "envdir" / "code-runner.env"
     assert env_file.stat().st_mode & 0o777 == 0o600
     lines = [x for x in env_file.read_text().splitlines() if x.strip()]
-    assert lines and all(x.startswith("#") for x in lines)
+    assert any(x.startswith("#") for x in lines)
+    settings = dict(x.split("=", 1) for x in lines if not x.startswith("#"))
+    assert settings["CODE_RUNNER_TRANSPORT"] == "streamable-http"
+    assert settings["FASTMCP_PORT"] == "8031"
+    assert settings["PATH"].startswith(str(tmp_path / "home" / ".local" / "bin"))
+    backend = ROOT / "deploy" / "systemd" / "code-runner-backend.service"
+    assert "EnvironmentFile=%h/.config/code-runner/code-runner.env" in backend.read_text()
 
 
 def test_existing_env_untouched_and_not_printed(tmp_path):

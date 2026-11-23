@@ -37,15 +37,14 @@ scripts/install-daemon.sh [--dry-run] [--unit-dir DIR]
 |---|---|
 | юниты | `proxy.socket`, `proxy.service`, `backend.service`, `limits.conf` — всегда; `forgetful-ready.conf` — только если у хоста есть `forgetful-proxy.socket` (иначе строка о пропуске) |
 | повторный запуск | файл с тем же содержимым не трогается; запись атомарная (tmp + mv); без изменений печатает `no changes` |
-| `code-runner.env` | нет файла — создаётся шаблон с комментариями, `chmod 600`; существующий не читается и не печатается |
+| `code-runner.env` | нет файла — создаётся с настройками HTTP-режима (`CODE_RUNNER_TRANSPORT=streamable-http`, `FASTMCP_*`, `PATH`) и комментариями, `chmod 600`; существующий не читается и не печатается |
 | systemd | `daemon-reload` (если юниты изменились) и `enable --now code-runner-proxy.socket`; backend без `[Install]` |
 | linger | при `Linger=no` печатает `loginctl enable-linger <user>`, сам не включает |
 | `--dry-run` | печатает план, ничего не пишет |
 | `--unit-dir DIR` | юниты в DIR (по умолчанию `~/.config/systemd/user`); systemctl, loginctl и smoke не вызываются |
 | smoke | `curl` на `:8030/mcp` до 60 с (`CODE_RUNNER_SMOKE_TIMEOUT`); rc≠0 при провале |
 
-Переменные: `CODE_RUNNER_ENV_DIR` (по умолчанию `~/.config/code-runner`),
-`CODE_RUNNER_SMOKE_URL`, `CODE_RUNNER_UNIT_SEARCH_PATH` (где искать `forgetful-proxy.socket`).
+Переменные: `CODE_RUNNER_SMOKE_URL`, `CODE_RUNNER_UNIT_SEARCH_PATH` (где искать `forgetful-proxy.socket`).
 
 В конце скрипт печатает команду переключения MCP-конфига на
 `http://127.0.0.1:8030/mcp`; сам конфиг Claude Code не правит. Эталон юнитов для
