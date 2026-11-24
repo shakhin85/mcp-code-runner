@@ -2635,7 +2635,7 @@ class CodeExecutor:
             result = namespace.pop(_RESULT_SENTINEL, None)
             if result is not None:
                 if isinstance(result, (dict, list)):
-                    output += json.dumps(result, ensure_ascii=False, indent=2)
+                    output += json.dumps(result, ensure_ascii=False, indent=2, default=str)
                 else:
                     output += str(result)
             if session_id is not None:

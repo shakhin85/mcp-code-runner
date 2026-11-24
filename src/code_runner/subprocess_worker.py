@@ -356,7 +356,7 @@ async def _exec_user_code(
         result = namespace.pop(_RESULT_SENTINEL, None)
         if result is not None:
             if isinstance(result, (dict, list)):
-                output += _json.dumps(result, ensure_ascii=False, indent=2)
+                output += _json.dumps(result, ensure_ascii=False, indent=2, default=str)
             else:
                 output += str(result)
         user_vars, dropped = _extract_picklable_vars(namespace, framework_names)
