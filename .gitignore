@@ -13,6 +13,7 @@ models/
 .dual-graph/
 
 .task-record.json
+CONTEXT.md
 CONTEXT.md.bak
 .task-record.log.jsonl
 .task-record.log.jsonl.lock
