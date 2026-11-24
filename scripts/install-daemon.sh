@@ -15,6 +15,8 @@ SMOKE_OK_CODE=406
 MCP_URL="http://127.0.0.1:$CLIENT_PORT/mcp"
 SMOKE_URL="${CODE_RUNNER_SMOKE_URL:-$MCP_URL}"
 SMOKE_TIMEOUT="${CODE_RUNNER_SMOKE_TIMEOUT:-60}"
+# Системные каталоги user-юнитов (двоеточие); переменная нужна тестам
+SYSTEM_UNIT_DIRS="${CODE_RUNNER_SYSTEM_UNIT_DIRS:-/etc/systemd/user:/usr/lib/systemd/user:/lib/systemd/user}"
 DRY_RUN=0
 CUSTOM_UNIT_DIR=0
 CHANGED=0
@@ -29,8 +31,9 @@ usage() {
   --dry-run       напечатать план, ничего не писать
   --unit-dir DIR  каталог юнитов (по умолчанию ~/.config/systemd/user);
                   с ним systemctl, loginctl и smoke не вызываются
-  --env-dir DIR   каталог code-runner.env (по умолчанию ~/.config/code-runner;
-                  с --unit-dir — DIR/../code-runner)
+  --env-dir DIR   каталог code-runner.env; только вместе с --unit-dir
+                  (по умолчанию с --unit-dir — DIR/../code-runner;
+                  без --unit-dir юнит читает ~/.config/code-runner)
 Переменные: CODE_RUNNER_SMOKE_TIMEOUT (целое, с, по умолчанию 60), CODE_RUNNER_SMOKE_URL.
 EOF
 }
@@ -78,7 +81,14 @@ install_unit() {
 }
 
 has_forgetful() {
-  [ -e "$UNIT_DIR/forgetful-proxy.socket" ]
+  local d
+  [ -e "$UNIT_DIR/forgetful-proxy.socket" ] && return 0
+  [ "$CUSTOM_UNIT_DIR" = 0 ] || return 1
+  local IFS=:
+  for d in $SYSTEM_UNIT_DIRS; do
+    [ ! -e "$d/forgetful-proxy.socket" ] || return 0
+  done
+  return 1
 }
 
 unit_changed() {
@@ -87,6 +97,11 @@ unit_changed() {
     [ "$u" != "$1" ] || return 0
   done
   return 1
+}
+
+backend_changed() {
+  unit_changed code-runner-backend.service || unit_changed limits.conf ||
+    unit_changed forgetful-ready.conf
 }
 
 proxy_changed() {
@@ -137,7 +152,7 @@ smoke() {
   echo "smoke: curl $SMOKE_URL (до ${SMOKE_TIMEOUT} с)"
   local code=""
   while :; do
-    code="$(curl -fs -o /dev/null -m 5 -w '%{http_code}' "$SMOKE_URL" || true)"
+    code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$SMOKE_URL" || true)"
     if [ "$code" = "$SMOKE_OK_CODE" ]; then
       echo "smoke: ok (HTTP $code)"
       return 0
@@ -179,8 +194,9 @@ done
 
 case "$SMOKE_TIMEOUT" in
   '' | *[!0-9]*) die_usage "CODE_RUNNER_SMOKE_TIMEOUT должен быть целым числом секунд, получено: $SMOKE_TIMEOUT" ;;
-  *) ;;
+  *) SMOKE_TIMEOUT=$((10#$SMOKE_TIMEOUT)) ;;
 esac
+[ -z "$ENV_DIR" ] || [ "$CUSTOM_UNIT_DIR" = 1 ] || die_usage "--env-dir допустим только вместе с --unit-dir"
 if [ -z "$ENV_DIR" ]; then
   if [ "$CUSTOM_UNIT_DIR" = 1 ]; then
     ENV_DIR="$UNIT_DIR/../code-runner"
@@ -233,7 +249,9 @@ fi
 if [ "${#CHANGED_UNITS[@]}" -gt 0 ]; then
   systemctl --user daemon-reload
   echo "изменены юниты: ${CHANGED_UNITS[*]}"
-  echo "если backend уже запущен: systemctl --user restart code-runner-backend.service"
+  if backend_changed; then
+    echo "если backend уже запущен: systemctl --user restart code-runner-backend.service"
+  fi
 fi
 if proxy_changed; then
   systemctl --user stop code-runner-proxy.service

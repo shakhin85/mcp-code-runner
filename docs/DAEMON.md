@@ -43,15 +43,15 @@ scripts/install-daemon.sh --dry-run --unit-dir /tmp/code-runner-units
 
 | Шаг | Поведение |
 |---|---|
-| юниты | `proxy.socket`, `proxy.service`, `backend.service`, `limits.conf` — всегда; `forgetful-ready.conf` — только если `forgetful-proxy.socket` лежит в целевом каталоге юнитов (без `--unit-dir` — `~/.config/systemd/user`) (иначе строка о пропуске) |
+| юниты | `proxy.socket`, `proxy.service`, `backend.service`, `limits.conf` — всегда; `forgetful-ready.conf` — только если `forgetful-proxy.socket` лежит в целевом каталоге юнитов; без `--unit-dir` ищет ещё в `/etc/systemd/user`, `/usr/lib/systemd/user`, `/lib/systemd/user`, с `--unit-dir` — только в нём (иначе строка о пропуске) |
 | повторный запуск | файл с тем же содержимым не трогается; запись атомарная (tmp + mv); без изменений печатает `no changes`; создание `code-runner.env` тоже считается изменением |
 | `code-runner.env` | нет файла — создаётся с настройками HTTP-режима (`CODE_RUNNER_TRANSPORT=streamable-http`, `FASTMCP_*`, `PATH`) и комментариями, `chmod 600`; существующий не читается и не печатается |
-| systemd | `daemon-reload` (если юниты изменились), печатает список изменённых юнитов; изменён `proxy.socket` или `proxy.service` — `stop code-runner-proxy.service` и `restart code-runner-proxy.socket`; затем `enable --now code-runner-proxy.socket`; backend без `[Install]` |
+| systemd | `daemon-reload` (если юниты изменились), печатает список изменённых юнитов (подсказку `restart code-runner-backend.service` — только если изменён backend-юнит или его drop-in); изменён `proxy.socket` или `proxy.service` — `stop code-runner-proxy.service` и `restart code-runner-proxy.socket`; затем `enable --now code-runner-proxy.socket`; backend без `[Install]` |
 | linger | при `Linger=no` печатает `loginctl enable-linger <user>`, сам не включает |
 | `--dry-run` | печатает план, ничего не пишет |
 | `--unit-dir DIR` | юниты в DIR (по умолчанию `~/.config/systemd/user`); systemctl, loginctl и smoke не вызываются |
-| `--env-dir DIR` | каталог `code-runner.env`; по умолчанию `~/.config/code-runner`, с `--unit-dir` — `DIR/../code-runner` (настоящий `~/.config` не трогается) |
-| smoke | `curl -f` на `:8030/mcp` до 60 с (`CODE_RUNNER_SMOKE_TIMEOUT`, целое число, иначе rc=2); принимается только HTTP 406 (замер 2026-11-24: `GET /mcp` без `Accept: text/event-stream` на streamable-http отвечает 406); любой другой код и 000 — провал, rc≠0 |
+| `--env-dir DIR` | каталог `code-runner.env`; допустим только вместе с `--unit-dir` (иначе rc=2: юнит читает `~/.config/code-runner`); по умолчанию с `--unit-dir` — `DIR/../code-runner` (настоящий `~/.config` не трогается) |
+| smoke | `curl` на `:8030/mcp` до 60 с (`CODE_RUNNER_SMOKE_TIMEOUT`, десятичное целое, `08` = 8, не число — rc=2); smoke ждёт HTTP 406 от `GET /mcp` streamable-http (без `Accept: text/event-stream`, замер 2026-11-24); код не зависит от URL; любой другой код и 000 — провал, rc≠0 |
 
 Переменные: `CODE_RUNNER_SMOKE_URL`, `CODE_RUNNER_SMOKE_TIMEOUT`.
 

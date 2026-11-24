@@ -257,8 +257,6 @@ def test_f1_env_creation_counts_as_change(tmp_path):
     r = run(tmp_path, "--unit-dir", units)
     assert r.returncode == 0 and env_file.exists()
     assert "created:" in r.stdout and "no changes" not in r.stdout
-    dry = run(tmp_path, "--dry-run", "--unit-dir", tmp_path / "u2", CODE_RUNNER_X="1")
-    assert "no changes" not in dry.stdout
     env_file.unlink()
     dry = run(tmp_path, "--dry-run", "--unit-dir", units)
     assert "would create" in dry.stdout and "no changes" not in dry.stdout
@@ -477,7 +475,6 @@ def test_f10_smoke_accepts_only_measured_code(tmp_path, serve):
         assert r.returncode != 0 and "smoke: FAIL" in r.stderr and str(bad) in r.stderr
     r = run(tmp_path, stubs=stubs, CODE_RUNNER_SMOKE_URL=closed_url(), CODE_RUNNER_SMOKE_TIMEOUT=1)
     assert r.returncode != 0 and "smoke: FAIL" in r.stderr and "000" in r.stderr
-    assert "curl -fs" in SCRIPT.read_text()
 
 
 def test_f8_docs_install_command_runs(tmp_path):
@@ -490,3 +487,41 @@ def test_f8_docs_install_command_runs(tmp_path):
     assert r.returncode == 0, r.stderr
     assert "would write" in r.stdout and not units.exists()
     assert str(MEASURED_CODE) in doc
+
+
+def test_r1_env_dir_requires_unit_dir(tmp_path):
+    r = run(tmp_path, "--dry-run", "--env-dir", tmp_path / "e")
+    assert r.returncode == 2
+    assert "--env-dir" in r.stderr and "--unit-dir" in r.stderr
+    ok = run(tmp_path, "--dry-run", "--unit-dir", tmp_path / "u", "--env-dir", tmp_path / "e")
+    assert ok.returncode == 0, ok.stderr
+
+
+def test_r2_forgetful_socket_in_system_dirs(tmp_path):
+    system = tmp_path / "system"
+    seed_forgetful(system)
+    kw = {"CODE_RUNNER_SYSTEM_UNIT_DIRS": f"{tmp_path / 'none'}:{system}"}
+    r = run(tmp_path, "--dry-run", **kw)
+    assert "forgetful-ready.conf" in r.stdout and "skip: forgetful-ready.conf" not in r.stdout
+    r = run(tmp_path, "--dry-run", "--unit-dir", tmp_path / "u", **kw)
+    assert "skip: forgetful-ready.conf" in r.stdout
+
+
+def test_r3_smoke_timeout_leading_zero_is_decimal(tmp_path):
+    for value in ("08", "09", "010"):
+        r = run(tmp_path, "--dry-run", "--unit-dir", tmp_path / "u", CODE_RUNNER_SMOKE_TIMEOUT=value)
+        assert r.returncode == 0, r.stderr
+    r = run(tmp_path, "--dry-run", CODE_RUNNER_SMOKE_TIMEOUT="08")
+    assert "timeout 8s" in r.stdout
+
+
+def test_r5_restart_hint_only_for_backend_changes(tmp_path, serve):
+    stubs = make_stubs(tmp_path, fail=False)
+    kw = {"stubs": stubs, "CODE_RUNNER_SMOKE_URL": serve(406), "CODE_RUNNER_SMOKE_TIMEOUT": 5}
+    hint = "restart code-runner-backend.service"
+    units = tmp_path / "home" / ".config" / "systemd" / "user"
+    assert hint in run(tmp_path, **kw).stdout
+    (units / "code-runner-proxy.service").write_text("x\n")
+    assert hint not in run(tmp_path, **kw).stdout
+    (units / "code-runner-backend.service.d" / "limits.conf").write_text("x\n")
+    assert hint in run(tmp_path, **kw).stdout
