@@ -1,9 +1,9 @@
 [Unit]
-Description=code-runner MCP proxy :8030 -> backend :8031 (socket-activated, idle-stop)
+Description=code-runner MCP proxy :@CLIENT_PORT@ -> backend :@BACKEND_PORT@ (socket-activated, idle-stop)
 Requires=code-runner-backend.service
 After=code-runner-backend.service
 # при простое прокси выходит → backend становится unneeded → тоже гаснет
 
 [Service]
 # первое подключение поднимает backend; --exit-idle-time гасит цепочку после простоя
-ExecStart=/lib/systemd/systemd-socket-proxyd --exit-idle-time=15min 127.0.0.1:8031
+ExecStart=/lib/systemd/systemd-socket-proxyd --exit-idle-time=15min 127.0.0.1:@BACKEND_PORT@
